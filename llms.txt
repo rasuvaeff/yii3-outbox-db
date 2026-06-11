@@ -1,0 +1,65 @@
+# rasuvaeff/yii3-outbox-db
+
+Database-backed `StorageInterface` for `rasuvaeff/yii3-outbox` (yiisoft/db).
+
+## Install
+
+```bash
+composer require rasuvaeff/yii3-outbox-db
+```
+
+## Rules
+
+- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\StorageInterface`.
+- `save()` upserts by `OutboxMessage::getId()` — the durable identity and the
+  at-least-once dedup anchor; never regenerate it.
+- `findPending(array $types = [], int $limit = 1000)`: `Pending` rows, optional
+  type filter (empty = all), ordered by `created_at` ASC. Lets several consumers
+  share one outbox.
+- `markPublished`/`markFailed` re-save with the new status, preserving the
+  attempt count / `last_attempt_at` of the passed message.
+- Datetimes stored as `Y-m-d H:i:s` UTC strings.
+- Corrupt rows → `InvalidOutboxRowException` (never silently coerced).
+- Core `yii3-outbox` ships no `config/di.php`; this backend (or the app) is the
+  single source of `StorageInterface`.
+
+## API
+
+```php
+use Rasuvaeff\Yii3Outbox\Outbox;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+
+$storage = new DbOutboxStorage(db: $connection, table: 'outbox');
+
+$outbox = new Outbox(storage: $storage, clock: $clock);
+$outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
+
+$pending = $storage->findPending(types: ['ab.exposure'], limit: 1000);
+$storage->markPublished($message);
+$storage->markFailed($message);
+$message = $storage->getById($id);          // ?OutboxMessage
+$purged  = $storage->deleteByStatus(OutboxStatus::Published);
+```
+
+## Migration
+
+```php
+use M260611000000CreateOutboxTable;
+
+(new M260611000000CreateOutboxTable())->up($migrationBuilder);          // table "outbox"
+(new M260611000000CreateOutboxTable(table: 'my_outbox'))->up($builder); // custom name
+```
+
+Columns: `id` (PK), `type`, `payload`, `status`, `created_at`, `attempts`,
+`last_attempt_at`, `aggregate_id`. Index `idx_outbox_status_type` backs the
+pending poll.
+
+## DI / params
+
+```php
+// config/params.php
+'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox'],
+```
+
+Binds `StorageInterface => DbOutboxStorage` from `config/di.php`.
