@@ -60,6 +60,52 @@ final readonly class DbOutboxStorage implements StorageInterface
     }
 
     #[\Override]
+    public function claim(array $types = [], int $limit = 1000): array
+    {
+        return $this->db->transaction(function () use ($types, $limit): array {
+            $query = (new Query($this->db))
+                ->select('id')
+                ->from($this->table)
+                ->where(condition: ['status' => OutboxStatus::Pending->value])
+                ->orderBy(['created_at' => SORT_ASC])
+                ->limit($limit);
+
+            if ($types !== []) {
+                $query->andWhere(['type' => $types]);
+            }
+
+            $ids = $query->column();
+
+            if ($ids === []) {
+                return [];
+            }
+
+            $claimId = bin2hex(random_bytes(8));
+
+            $this->db->createCommand()->update(
+                table: $this->table,
+                columns: ['status' => OutboxStatus::Processing->value, 'claimed_by' => $claimId],
+                condition: ['id' => $ids, 'status' => OutboxStatus::Pending->value],
+            )->execute();
+
+            $rows = (new Query($this->db))
+                ->from($this->table)
+                ->where(condition: ['claimed_by' => $claimId, 'status' => OutboxStatus::Processing->value])
+                ->orderBy(['created_at' => SORT_ASC])
+                ->all();
+
+            $messages = [];
+
+            foreach ($rows as $row) {
+                /** @var array<array-key, mixed> $row */
+                $messages[] = $this->mapper->map(row: $row);
+            }
+
+            return $messages;
+        });
+    }
+
+    #[\Override]
     public function markPublished(OutboxMessage $message): void
     {
         $this->save(message: $message->withStatus(OutboxStatus::Published));
@@ -111,6 +157,7 @@ final readonly class DbOutboxStorage implements StorageInterface
             'attempts' => $message->getAttempts(),
             'last_attempt_at' => $lastAttemptAt === null ? null : $this->mapper->formatDateTime($lastAttemptAt),
             'aggregate_id' => $message->getAggregateId(),
+            'claimed_by' => null,
         ];
     }
 }

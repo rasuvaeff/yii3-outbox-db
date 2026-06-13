@@ -54,7 +54,7 @@ final class MigrationTest extends TestCase
         $schema = $this->db->getTableSchema('outbox', true);
         $this->assertNotNull($schema);
 
-        foreach (['id', 'type', 'payload', 'status', 'created_at', 'attempts', 'last_attempt_at', 'aggregate_id'] as $column) {
+        foreach (['id', 'type', 'payload', 'status', 'created_at', 'attempts', 'last_attempt_at', 'aggregate_id', 'claimed_by'] as $column) {
             $this->assertNotNull($schema->getColumn($column), "Missing column {$column}");
         }
 

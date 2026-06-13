@@ -160,6 +160,84 @@ final class SqliteIntegrationTest extends TestCase
     }
 
     #[Test]
+    public function claimTransitionsPendingToProcessingAndReturnsThem(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->pending(id: 'b', type: 'ab.exposure', createdAt: '2026-06-11 12:02:00'));
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00'));
+
+        $claimed = $storage->claim();
+
+        $this->assertSame(['a', 'b'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed));
+
+        foreach ($claimed as $m) {
+            $this->assertSame(OutboxStatus::Processing, $m->getStatus());
+        }
+
+        $this->assertSame([], $storage->findPending());
+    }
+
+    #[Test]
+    public function claimRespectsLimit(): void
+    {
+        $storage = $this->createStorage();
+
+        for ($i = 1; $i <= 4; $i++) {
+            $storage->save($this->pending(id: 'm' . $i, type: 'ab.exposure', createdAt: '2026-06-11 12:0' . $i . ':00'));
+        }
+
+        $claimed = $storage->claim(limit: 2);
+
+        $this->assertCount(2, $claimed);
+        $this->assertCount(2, $storage->findPending());
+    }
+
+    #[Test]
+    public function claimFiltersByType(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->pending(id: 'exp', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        $storage->save($this->pending(id: 'order', type: 'order.created', createdAt: '2026-06-11 12:01:00'));
+
+        $claimed = $storage->claim(types: ['ab.exposure']);
+
+        $this->assertSame(['exp'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed));
+        $this->assertCount(1, $storage->findPending());
+    }
+
+    #[Test]
+    public function claimSecondCallSkipsAlreadyProcessingMessages(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        $storage->claim();
+        $second = $storage->claim();
+
+        $this->assertSame([], $second);
+    }
+
+    #[Test]
+    public function saveWithPendingStatusClearsClaimedBy(): void
+    {
+        $storage = $this->createStorage();
+        $message = $this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+        $storage->save($message);
+
+        $claimed = $storage->claim();
+        $this->assertCount(1, $claimed);
+
+        $storage->save($claimed[0]->withStatus(OutboxStatus::Pending));
+
+        $reclaimed = $storage->claim();
+        $this->assertCount(1, $reclaimed);
+        $this->assertSame('a', $reclaimed[0]->getId());
+    }
+
+    #[Test]
     public function deleteByStatusRemovesMatchingRows(): void
     {
         $storage = $this->createStorage();
@@ -224,7 +302,8 @@ final class SqliteIntegrationTest extends TestCase
                 created_at      VARCHAR(30)  NOT NULL,
                 attempts        INTEGER      NOT NULL DEFAULT 0,
                 last_attempt_at VARCHAR(30),
-                aggregate_id    VARCHAR(255)
+                aggregate_id    VARCHAR(255),
+                claimed_by      VARCHAR(64)
             )
         ")->execute();
     }

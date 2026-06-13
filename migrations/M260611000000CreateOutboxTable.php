@@ -46,10 +46,11 @@ final class M260611000000CreateOutboxTable implements RevertibleMigrationInterfa
                 'attempts' => 'integer NOT NULL DEFAULT 0',
                 'last_attempt_at' => 'string(30)',
                 'aggregate_id' => 'string(255)',
+                'claimed_by' => 'string(64)',
             ],
         );
 
-        $b->createIndex($this->table, 'idx_outbox_status_type', ['status', 'type']);
+        $b->createIndex($this->table, 'idx_outbox_pending', ['status', 'type', 'created_at']);
     }
 
     #[\Override]
