@@ -4,26 +4,30 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Exception\InvalidOutboxRowException;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\AfterTest;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
-#[CoversClass(DbOutboxStorage::class)]
-final class SqliteIntegrationTest extends TestCase
+#[Test]
+#[Covers(DbOutboxStorage::class)]
+final class SqliteIntegrationTest
 {
     private ConnectionInterface $db;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
@@ -33,13 +37,12 @@ final class SqliteIntegrationTest extends TestCase
         $this->createTable(name: 'outbox');
     }
 
-    #[\Override]
-    protected function tearDown(): void
+    #[AfterTest]
+    public function tearDown(): void
     {
         $this->db->close();
     }
 
-    #[Test]
     public function savesAndReadsBackMessage(): void
     {
         $storage = $this->createStorage();
@@ -55,22 +58,20 @@ final class SqliteIntegrationTest extends TestCase
 
         $loaded = $storage->getById($message->getId());
 
-        $this->assertNotNull($loaded);
-        $this->assertSame($message->getId(), $loaded->getId());
-        $this->assertSame('ab.exposure', $loaded->getType());
-        $this->assertSame('{"experiment":"checkout"}', $loaded->getPayload());
-        $this->assertSame('agg-1', $loaded->getAggregateId());
-        $this->assertSame(OutboxStatus::Pending, $loaded->getStatus());
-        $this->assertSame('2026-06-11 12:00:00', $loaded->getCreatedAt()->format('Y-m-d H:i:s'));
+        Assert::notNull($loaded);
+        Assert::same($loaded->getId(), $message->getId());
+        Assert::same($loaded->getType(), 'ab.exposure');
+        Assert::same($loaded->getPayload(), '{"experiment":"checkout"}');
+        Assert::same($loaded->getAggregateId(), 'agg-1');
+        Assert::same($loaded->getStatus(), OutboxStatus::Pending);
+        Assert::same($loaded->getCreatedAt()->format('Y-m-d H:i:s'), '2026-06-11 12:00:00');
     }
 
-    #[Test]
     public function getByIdReturnsNullForMissingId(): void
     {
-        $this->assertNull($this->createStorage()->getById('nope'));
+        Assert::null($this->createStorage()->getById('nope'));
     }
 
-    #[Test]
     public function findPendingReturnsOnlyPendingOrderedByCreatedAt(): void
     {
         $storage = $this->createStorage();
@@ -83,10 +84,9 @@ final class SqliteIntegrationTest extends TestCase
 
         $result = $storage->findPending();
 
-        $this->assertSame(['a', 'b'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $result));
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $result), ['a', 'b']);
     }
 
-    #[Test]
     public function findPendingFiltersByType(): void
     {
         $storage = $this->createStorage();
@@ -97,10 +97,9 @@ final class SqliteIntegrationTest extends TestCase
 
         $result = $storage->findPending(types: ['ab.exposure', 'ab.conversion']);
 
-        $this->assertSame(['exp', 'conv'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $result));
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $result), ['exp', 'conv']);
     }
 
-    #[Test]
     public function findPendingRespectsLimit(): void
     {
         $storage = $this->createStorage();
@@ -109,10 +108,9 @@ final class SqliteIntegrationTest extends TestCase
             $storage->save($this->pending(id: 'm' . $i, type: 'ab.exposure', createdAt: '2026-06-11 12:0' . $i . ':00'));
         }
 
-        $this->assertCount(3, $storage->findPending(limit: 3));
+        Assert::count($storage->findPending(limit: 3), 3);
     }
 
-    #[Test]
     public function markPublishedMovesMessageOutOfPending(): void
     {
         $storage = $this->createStorage();
@@ -121,15 +119,14 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->markPublished($message->withAttempt(new \DateTimeImmutable('2026-06-11 12:05:00')));
 
-        $this->assertSame([], $storage->findPending());
+        Assert::same($storage->findPending(), []);
         $loaded = $storage->getById('m1');
-        $this->assertNotNull($loaded);
-        $this->assertSame(OutboxStatus::Published, $loaded->getStatus());
-        $this->assertSame(1, $loaded->getAttempts());
-        $this->assertNotNull($loaded->getLastAttemptAt());
+        Assert::notNull($loaded);
+        Assert::same($loaded->getStatus(), OutboxStatus::Published);
+        Assert::same($loaded->getAttempts(), 1);
+        Assert::notNull($loaded->getLastAttemptAt());
     }
 
-    #[Test]
     public function markFailedMovesMessageOutOfPending(): void
     {
         $storage = $this->createStorage();
@@ -138,13 +135,12 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->markFailed($message);
 
-        $this->assertSame([], $storage->findPending());
+        Assert::same($storage->findPending(), []);
         $loaded = $storage->getById('m1');
-        $this->assertNotNull($loaded);
-        $this->assertSame(OutboxStatus::Failed, $loaded->getStatus());
+        Assert::notNull($loaded);
+        Assert::same($loaded->getStatus(), OutboxStatus::Failed);
     }
 
-    #[Test]
     public function saveUpsertsExistingId(): void
     {
         $storage = $this->createStorage();
@@ -154,12 +150,11 @@ final class SqliteIntegrationTest extends TestCase
         $storage->save($message->withAttempt(new \DateTimeImmutable('2026-06-11 12:05:00')));
 
         $loaded = $storage->getById('m1');
-        $this->assertNotNull($loaded);
-        $this->assertSame(1, $loaded->getAttempts());
-        $this->assertCount(1, iterator_to_array($this->allRows()));
+        Assert::notNull($loaded);
+        Assert::same($loaded->getAttempts(), 1);
+        Assert::count(iterator_to_array($this->allRows()), 1);
     }
 
-    #[Test]
     public function claimTransitionsPendingToProcessingAndReturnsThem(): void
     {
         $storage = $this->createStorage();
@@ -169,16 +164,15 @@ final class SqliteIntegrationTest extends TestCase
 
         $claimed = $storage->claim();
 
-        $this->assertSame(['a', 'b'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed));
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['a', 'b']);
 
         foreach ($claimed as $m) {
-            $this->assertSame(OutboxStatus::Processing, $m->getStatus());
+            Assert::same($m->getStatus(), OutboxStatus::Processing);
         }
 
-        $this->assertSame([], $storage->findPending());
+        Assert::same($storage->findPending(), []);
     }
 
-    #[Test]
     public function claimRespectsLimit(): void
     {
         $storage = $this->createStorage();
@@ -189,11 +183,10 @@ final class SqliteIntegrationTest extends TestCase
 
         $claimed = $storage->claim(limit: 2);
 
-        $this->assertCount(2, $claimed);
-        $this->assertCount(2, $storage->findPending());
+        Assert::count($claimed, 2);
+        Assert::count($storage->findPending(), 2);
     }
 
-    #[Test]
     public function claimFiltersByType(): void
     {
         $storage = $this->createStorage();
@@ -203,11 +196,10 @@ final class SqliteIntegrationTest extends TestCase
 
         $claimed = $storage->claim(types: ['ab.exposure']);
 
-        $this->assertSame(['exp'], array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed));
-        $this->assertCount(1, $storage->findPending());
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['exp']);
+        Assert::count($storage->findPending(), 1);
     }
 
-    #[Test]
     public function claimSecondCallSkipsAlreadyProcessingMessages(): void
     {
         $storage = $this->createStorage();
@@ -217,10 +209,9 @@ final class SqliteIntegrationTest extends TestCase
         $storage->claim();
         $second = $storage->claim();
 
-        $this->assertSame([], $second);
+        Assert::same($second, []);
     }
 
-    #[Test]
     public function saveWithPendingStatusClearsClaimedBy(): void
     {
         $storage = $this->createStorage();
@@ -228,16 +219,15 @@ final class SqliteIntegrationTest extends TestCase
         $storage->save($message);
 
         $claimed = $storage->claim();
-        $this->assertCount(1, $claimed);
+        Assert::count($claimed, 1);
 
         $storage->save($claimed[0]->withStatus(OutboxStatus::Pending));
 
         $reclaimed = $storage->claim();
-        $this->assertCount(1, $reclaimed);
-        $this->assertSame('a', $reclaimed[0]->getId());
+        Assert::count($reclaimed, 1);
+        Assert::same($reclaimed[0]->getId(), 'a');
     }
 
-    #[Test]
     public function deleteByStatusRemovesMatchingRows(): void
     {
         $storage = $this->createStorage();
@@ -246,12 +236,11 @@ final class SqliteIntegrationTest extends TestCase
 
         $deleted = $storage->deleteByStatus(OutboxStatus::Published);
 
-        $this->assertSame(1, $deleted);
-        $this->assertNull($storage->getById('m1'));
-        $this->assertNotNull($storage->getById('m2'));
+        Assert::same($deleted, 1);
+        Assert::null($storage->getById('m1'));
+        Assert::notNull($storage->getById('m2'));
     }
 
-    #[Test]
     public function usesCustomTableName(): void
     {
         $this->createTable(name: 'custom_outbox');
@@ -259,10 +248,9 @@ final class SqliteIntegrationTest extends TestCase
 
         $storage->save($this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
 
-        $this->assertCount(1, $storage->findPending());
+        Assert::count($storage->findPending(), 1);
     }
 
-    #[Test]
     public function findPendingThrowsOnCorruptRow(): void
     {
         $this->db->createCommand(sql: "
@@ -270,7 +258,7 @@ final class SqliteIntegrationTest extends TestCase
             VALUES ('bad', 'ab.exposure', '{}', 'pending', 'not-a-date', 0, NULL, NULL)
         ")->execute();
 
-        $this->expectException(InvalidOutboxRowException::class);
+        Expect::exception(InvalidOutboxRowException::class);
 
         $this->createStorage()->findPending();
     }

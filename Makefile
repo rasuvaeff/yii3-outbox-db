@@ -2,7 +2,7 @@ DOCKER := docker run --rm -v "$(PWD)":/app -w /app composer:2
 DOCKER_HOST := docker run --rm --network host -v "$(PWD)":/app -w /app
 PCOV_BOOTSTRAP := apk add --no-cache $$PHPIZE_DEPS >/dev/null && pecl install pcov >/dev/null && docker-php-ext-enable pcov
 
-.PHONY: bench build cs cs-fix psalm test mutation rector rector-fix install normalize require-checker \
+.PHONY: build cs cs-fix psalm test mutation rector rector-fix install normalize require-checker \
        test-coverage test-coverage-ci update-deps release-check bc-check audit-package
 
 install:
@@ -72,9 +72,9 @@ help:
 	@echo "  cs               check code style (dry-run)"
 	@echo "  cs-fix           fix code style"
 	@echo "  psalm            static analysis"
-	@echo "  test             run phpunit"
-	@echo "  test-coverage    run phpunit with coverage"
-	@echo "  test-coverage-ci run phpunit coverage for CI artifacts"
+	@echo "  test             run testo (Unit suite)"
+	@echo "  test-coverage    run testo with coverage"
+	@echo "  test-coverage-ci run testo coverage for CI artifacts"
 	@echo "  mutation         mutation testing"
 	@echo "  rector           check rector (dry-run)"
 	@echo "  rector-fix       apply rector fixes"

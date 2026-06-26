@@ -100,6 +100,8 @@ make build        # full gate: validate + normalize + require-checker + cs + psa
 make cs-fix
 make psalm
 make test
+make test-coverage
+make mutation
 ```
 
 Core `yii3-outbox` is consumed via a path repository while unpublished — see

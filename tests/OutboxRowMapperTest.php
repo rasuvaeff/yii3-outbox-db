@@ -4,26 +4,28 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\Exception\InvalidOutboxRowException;
 use Rasuvaeff\Yii3OutboxDb\OutboxRowMapper;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
+use Testo\Expect;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(OutboxRowMapper::class)]
-final class OutboxRowMapperTest extends TestCase
+#[Test]
+#[Covers(OutboxRowMapper::class)]
+final class OutboxRowMapperTest
 {
     private OutboxRowMapper $mapper;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->mapper = new OutboxRowMapper();
     }
 
-    #[Test]
     public function mapsFullRow(): void
     {
         $message = $this->mapper->map([
@@ -37,18 +39,17 @@ final class OutboxRowMapperTest extends TestCase
             'aggregate_id' => 'agg-1',
         ]);
 
-        $this->assertSame('id-1', $message->getId());
-        $this->assertSame('ab.exposure', $message->getType());
-        $this->assertSame('{"experiment":"x"}', $message->getPayload());
-        $this->assertSame(OutboxStatus::Pending, $message->getStatus());
-        $this->assertSame('2026-06-11 12:00:00', $message->getCreatedAt()->format('Y-m-d H:i:s'));
-        $this->assertSame(2, $message->getAttempts());
-        $this->assertNotNull($message->getLastAttemptAt());
-        $this->assertSame('2026-06-11 12:05:00', $message->getLastAttemptAt()->format('Y-m-d H:i:s'));
-        $this->assertSame('agg-1', $message->getAggregateId());
+        Assert::same($message->getId(), 'id-1');
+        Assert::same($message->getType(), 'ab.exposure');
+        Assert::same($message->getPayload(), '{"experiment":"x"}');
+        Assert::same($message->getStatus(), OutboxStatus::Pending);
+        Assert::same($message->getCreatedAt()->format('Y-m-d H:i:s'), '2026-06-11 12:00:00');
+        Assert::same($message->getAttempts(), 2);
+        Assert::notNull($message->getLastAttemptAt());
+        Assert::same($message->getLastAttemptAt()->format('Y-m-d H:i:s'), '2026-06-11 12:05:00');
+        Assert::same($message->getAggregateId(), 'agg-1');
     }
 
-    #[Test]
     public function mapsRowWithNullOptionalColumns(): void
     {
         $message = $this->mapper->map([
@@ -62,68 +63,63 @@ final class OutboxRowMapperTest extends TestCase
             'aggregate_id' => null,
         ]);
 
-        $this->assertNull($message->getLastAttemptAt());
-        $this->assertNull($message->getAggregateId());
-        $this->assertSame(OutboxStatus::Published, $message->getStatus());
+        Assert::null($message->getLastAttemptAt());
+        Assert::null($message->getAggregateId());
+        Assert::same($message->getStatus(), OutboxStatus::Published);
     }
 
-    #[Test]
     public function parsesIntAttemptsFromString(): void
     {
         $message = $this->mapper->map($this->validRow(['attempts' => '3']));
 
-        $this->assertSame(3, $message->getAttempts());
+        Assert::same($message->getAttempts(), 3);
     }
 
-    #[Test]
     public function throwsOnInvalidStatus(): void
     {
-        $this->expectException(InvalidOutboxRowException::class);
-        $this->expectExceptionMessage('Invalid outbox status "weird"');
-
-        $this->mapper->map($this->validRow(['status' => 'weird']));
+        try {
+            $this->mapper->map($this->validRow(['status' => 'weird']));
+            Assert::fail('Expected InvalidOutboxRowException');
+        } catch (InvalidOutboxRowException $e) {
+            Assert::string($e->getMessage())->contains('Invalid outbox status "weird"');
+        }
     }
 
-    #[Test]
     public function throwsOnInvalidCreatedAt(): void
     {
-        $this->expectException(InvalidOutboxRowException::class);
-        $this->expectExceptionMessage('Invalid "created_at" datetime');
-
-        $this->mapper->map($this->validRow(['created_at' => 'not-a-date']));
+        try {
+            $this->mapper->map($this->validRow(['created_at' => 'not-a-date']));
+            Assert::fail('Expected InvalidOutboxRowException');
+        } catch (InvalidOutboxRowException $e) {
+            Assert::string($e->getMessage())->contains('Invalid "created_at" datetime');
+        }
     }
 
-    #[Test]
     public function throwsOnInvalidLastAttemptAt(): void
     {
-        $this->expectException(InvalidOutboxRowException::class);
+        Expect::exception(InvalidOutboxRowException::class);
 
         $this->mapper->map($this->validRow(['last_attempt_at' => 'broken']));
     }
 
-    #[Test]
     public function throwsOnNonNumericAttempts(): void
     {
-        $this->expectException(InvalidOutboxRowException::class);
+        Expect::exception(InvalidOutboxRowException::class);
 
         $this->mapper->map($this->validRow(['attempts' => 'x']));
     }
 
-    #[Test]
     #[DataProvider('missingColumnProvider')]
     public function throwsOnMissingRequiredColumn(string $column): void
     {
         $row = $this->validRow();
         unset($row[$column]);
 
-        $this->expectException(InvalidOutboxRowException::class);
+        Expect::exception(InvalidOutboxRowException::class);
 
         $this->mapper->map($row);
     }
 
-    /**
-     * @return iterable<string, array{string}>
-     */
     public static function missingColumnProvider(): iterable
     {
         yield 'id' => ['id'];
@@ -134,23 +130,23 @@ final class OutboxRowMapperTest extends TestCase
         yield 'attempts' => ['attempts'];
     }
 
-    #[Test]
     public function throwsOnEmptyId(): void
     {
-        $this->expectException(InvalidOutboxRowException::class);
-        $this->expectExceptionMessage('Invalid outbox row');
-
-        $this->mapper->map($this->validRow(['id' => '']));
+        try {
+            $this->mapper->map($this->validRow(['id' => '']));
+            Assert::fail('Expected InvalidOutboxRowException');
+        } catch (InvalidOutboxRowException $e) {
+            Assert::string($e->getMessage())->contains('Invalid outbox row');
+        }
     }
 
-    #[Test]
     public function formatDateTimeNormalizesToUtc(): void
     {
         $formatted = $this->mapper->formatDateTime(
             new \DateTimeImmutable('2026-06-11 15:00:00', new \DateTimeZone('Europe/Berlin')),
         );
 
-        $this->assertSame('2026-06-11 13:00:00', $formatted);
+        Assert::same($formatted, '2026-06-11 13:00:00');
     }
 
     /**
