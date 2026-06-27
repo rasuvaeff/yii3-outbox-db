@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
-use PHPUnit\Framework\Attributes\CoversNothing;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Testo\Assert;
+use Testo\Codecov\CoversNothing;
+use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
@@ -23,41 +23,34 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
  * `yii3-outbox` ships no `config/di.php`, so the application or this backend is
  * the single source of `StorageInterface`.
  */
+#[Test]
 #[CoversNothing]
-final class ConfigWiringTest extends TestCase
+final class ConfigWiringTest
 {
-    #[Test]
     public function bindsOnlyTheStorageKey(): void
     {
-        $this->assertSame([StorageInterface::class], array_keys($this->loadDb([])));
+        Assert::same(array_keys($this->loadDb([])), [StorageInterface::class]);
     }
 
-    #[Test]
     public function storageFactoryBuildsDbStorage(): void
     {
         $storage = $this->resolveStorage([
             'rasuvaeff/yii3-outbox-db' => ['table' => 'custom_outbox'],
         ]);
 
-        $this->assertInstanceOf(DbOutboxStorage::class, $storage);
+        Assert::instanceOf($storage, DbOutboxStorage::class);
     }
 
-    #[Test]
     public function storageFactoryUsesDefaultsWhenParamsAbsent(): void
     {
-        $this->assertInstanceOf(DbOutboxStorage::class, $this->resolveStorage([]));
+        Assert::instanceOf($this->resolveStorage([]), DbOutboxStorage::class);
     }
 
-    #[Test]
     public function coreAndBackendDoNotShareDiKeys(): void
     {
         $overlap = array_intersect_key($this->loadCore(), $this->loadDb([]));
 
-        $this->assertSame(
-            [],
-            $overlap,
-            'core and -db must not define the same di key (yiisoft/config Duplicate key)',
-        );
+        Assert::same($overlap, [], 'core and -db must not define the same di key (yiisoft/config Duplicate key)');
     }
 
     /**
@@ -67,10 +60,10 @@ final class ConfigWiringTest extends TestCase
     {
         $definitions = $this->loadDb($params);
         $factory = $definitions[StorageInterface::class];
-        $this->assertIsCallable($factory);
+        Assert::true(is_callable($factory));
 
         $storage = $factory($this->sqlite());
-        $this->assertInstanceOf(StorageInterface::class, $storage);
+        Assert::instanceOf($storage, StorageInterface::class);
 
         return $storage;
     }

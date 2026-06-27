@@ -7,9 +7,7 @@
         "text": "php://stderr",
         "summary": "build/infection-summary.log"
     },
-    "phpUnit": {
-        "configDir": "."
-    },
+    "testFramework": "testo",
     "minMsi": 85,
     "mutators": {
         "@default": true

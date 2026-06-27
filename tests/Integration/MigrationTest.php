@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
 use M260611000000CreateOutboxTable;
-use PHPUnit\Framework\Attributes\CoversNothing;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Testo\Assert;
+use Testo\Codecov\CoversNothing;
+use Testo\Lifecycle\AfterTest;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Migration\Informer\NullMigrationInformer;
@@ -18,15 +20,16 @@ use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
+#[Test]
 #[CoversNothing]
-final class MigrationTest extends TestCase
+final class MigrationTest
 {
     private ConnectionInterface $db;
 
     private MigrationBuilder $builder;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         require_once dirname(__DIR__, 2) . '/migrations/M260611000000CreateOutboxTable.php';
 
@@ -38,13 +41,12 @@ final class MigrationTest extends TestCase
         $this->builder = new MigrationBuilder(db: $this->db, informer: new NullMigrationInformer());
     }
 
-    #[\Override]
-    protected function tearDown(): void
+    #[AfterTest]
+    public function tearDown(): void
     {
         $this->db->close();
     }
 
-    #[Test]
     public function createsAndDropsOutboxTable(): void
     {
         $migration = new M260611000000CreateOutboxTable();
@@ -52,29 +54,27 @@ final class MigrationTest extends TestCase
         $migration->up($this->builder);
 
         $schema = $this->db->getTableSchema('outbox', true);
-        $this->assertNotNull($schema);
+        Assert::notNull($schema);
 
         foreach (['id', 'type', 'payload', 'status', 'created_at', 'attempts', 'last_attempt_at', 'aggregate_id', 'claimed_by'] as $column) {
-            $this->assertNotNull($schema->getColumn($column), "Missing column {$column}");
+            Assert::notNull($schema->getColumn($column), "Missing column {$column}");
         }
 
-        $this->assertSame(['id'], $schema->getPrimaryKey());
+        Assert::same($schema->getPrimaryKey(), ['id']);
 
         $migration->down($this->builder);
 
-        $this->assertNull($this->db->getTableSchema('outbox', true));
+        Assert::null($this->db->getTableSchema('outbox', true));
     }
 
-    #[Test]
     public function createsTableWithCustomName(): void
     {
         (new M260611000000CreateOutboxTable(table: 'custom_outbox'))->up($this->builder);
 
-        $this->assertNotNull($this->db->getTableSchema('custom_outbox', true));
-        $this->assertNull($this->db->getTableSchema('outbox', true));
+        Assert::notNull($this->db->getTableSchema('custom_outbox', true));
+        Assert::null($this->db->getTableSchema('outbox', true));
     }
 
-    #[Test]
     public function migratedTableIsUsableByStorage(): void
     {
         (new M260611000000CreateOutboxTable())->up($this->builder);
@@ -88,6 +88,6 @@ final class MigrationTest extends TestCase
         );
         $storage->save($message);
 
-        $this->assertCount(1, $storage->findPending());
+        Assert::count($storage->findPending(), 1);
     }
 }

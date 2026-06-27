@@ -48,12 +48,26 @@ docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-db composer:2 sh -c '
 docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-db composer:2 composer build
 ```
 
+Or with Make:
+
+```bash
+make build
+make cs-fix
+make psalm
+make test
+make test-coverage
+make mutation
+make release-check
+```
+
 `composer.json` keeps `rasuvaeff/yii3-outbox: ^1.0` (Packagist) with **no**
 committed `repositories` block, so it is publish-ready. Until core is on
 Packagist the GitHub CI of this package is red — expected; the joint release
 publishes core first.
 
 `composer.lock` is gitignored (library).
+`make test-coverage` and `make mutation` bootstrap `pcov` inside the
+`composer:2` container because the base image has no coverage driver.
 
 ## Invariants & gotchas
 
