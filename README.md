@@ -6,6 +6,7 @@
 [![Static analysis](https://github.com/rasuvaeff/yii3-outbox-db/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox-db/actions)
 [![Psalm Level](https://shepherd.dev/github/rasuvaeff/yii3-outbox-db/level.svg)](https://shepherd.dev/github/rasuvaeff/yii3-outbox-db)
 [![License](https://poser.pugx.org/rasuvaeff/yii3-outbox-db/license)](https://packagist.org/packages/rasuvaeff/yii3-outbox-db)
+[Русская версия](README.ru.md)
 
 Database-backed storage for [`rasuvaeff/yii3-outbox`](https://github.com/rasuvaeff/yii3-outbox).
 Durably persists outbox messages in a `yiisoft/db` table so a worker can publish
