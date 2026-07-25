@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
-use M260611000000CreateOutboxTable;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
+use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Lifecycle\AfterTest;
@@ -31,8 +32,6 @@ final class MigrationTest
     #[BeforeTest]
     public function setUp(): void
     {
-        require_once dirname(__DIR__, 2) . '/migrations/M260611000000CreateOutboxTable.php';
-
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
         $this->db = new SqliteConnection(driver: $driver, schemaCache: $schemaCache);
@@ -69,7 +68,7 @@ final class MigrationTest
 
     public function createsTableWithCustomName(): void
     {
-        (new M260611000000CreateOutboxTable(table: 'custom_outbox'))->up($this->builder);
+        (new M260611000000CreateOutboxTable(table: new OutboxTableName('custom_outbox')))->up($this->builder);
 
         Assert::notNull($this->db->getTableSchema('custom_outbox', true));
         Assert::null($this->db->getTableSchema('outbox', true));

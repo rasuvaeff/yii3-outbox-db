@@ -71,6 +71,29 @@ publishes core first.
 
 ## Invariants & gotchas
 
+- **The table name is a VO, not a string, because `Injector` cannot resolve a
+  scalar.** `yiisoft/db-migration` builds migrations via `Injector::make()`,
+  which resolves arguments by name or by type from the container and never reads
+  a container definition keyed by the migration's own class. That is why the
+  1.x recipe `M...::class => ['__construct()' => ['table' => …]]` silently did
+  nothing — and why adding it made `Yiisoft\Di\Container` fatal at build time
+  (the global class was not autoloadable until the runner required the file).
+  Never reintroduce a scalar `string $table` on a migration.
+- **One source of truth for the name.** `config/di.php` builds `OutboxTableName`
+  from `table_prefix` + `table` params and passes it to both the storage and the
+  migration.
+- **Index names are derived from the table name** (`idx_<table>_pending`), with
+  `.` flattened to `_`. In PostgreSQL index names are unique per schema, not per
+  table.
+- Migrations live in `src/Migration/` and are therefore covered by cs, psalm and
+  infection like any other source file. `MigrationTableNameTest` asserts the
+  column set and the index's columns — without it, `ArrayItemRemoval` mutants in
+  `createTable`/`createIndex` escape and the MSI gate fails.
+- `composer test` runs only the Unit suite; `composer mutation` runs every
+  suite. An integration test left pointing at `migrations/` passes the first and
+  fails the second.
+- Identifier patterns are anchored with `\z`, not `$`: PCRE's `$` also matches
+  before a trailing newline.
 - `save` upserts by `id` (insert or update) — used both for the initial record
   and for retry re-saves with incremented attempts.
 - `markPublished`/`markFailed` re-save the message with the new status, so the

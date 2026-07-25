@@ -7,7 +7,10 @@ require __DIR__ . '/../vendor/autoload.php';
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\Outbox;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
 use Yiisoft\Db\Cache\SchemaCache;
+use Yiisoft\Db\Migration\Informer\NullMigrationInformer;
+use Yiisoft\Db\Migration\MigrationBuilder;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
@@ -24,18 +27,12 @@ $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
 $db = new SqliteConnection(driver: $driver, schemaCache: $schemaCache);
 $db->open();
 
-$db->createCommand(sql: '
-    CREATE TABLE outbox (
-        id              VARCHAR(255) PRIMARY KEY,
-        type            VARCHAR(255) NOT NULL,
-        payload         TEXT         NOT NULL,
-        status          VARCHAR(16)  NOT NULL,
-        created_at      VARCHAR(30)  NOT NULL,
-        attempts        INTEGER      NOT NULL DEFAULT 0,
-        last_attempt_at VARCHAR(30),
-        aggregate_id    VARCHAR(255)
-    )
-')->execute();
+// the bundled migration is the schema's single source of truth — a hand-written
+// CREATE TABLE here silently drifts (this example used to miss `claimed_by`,
+// which claim() needs)
+(new M260611000000CreateOutboxTable())->up(
+    new MigrationBuilder(db: $db, informer: new NullMigrationInformer()),
+);
 
 $storage = new DbOutboxStorage(db: $db);
 $outbox = new Outbox(storage: $storage, clock: $clock);

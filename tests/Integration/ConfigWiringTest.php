@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Test;
@@ -27,9 +28,25 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 #[CoversNothing]
 final class ConfigWiringTest
 {
-    public function bindsOnlyTheStorageKey(): void
+    public function bindsOnlyItsOwnKeys(): void
     {
-        Assert::same(array_keys($this->loadDb([])), [StorageInterface::class]);
+        // OutboxTableName is this package's own type; the core binds neither it
+        // nor StorageInterface, so there is nothing for yiisoft/config to call
+        // a duplicate
+        Assert::same(array_keys($this->loadDb([])), [OutboxTableName::class, StorageInterface::class]);
+    }
+
+    public function tableNameFactoryAppliesThePrefix(): void
+    {
+        $definitions = $this->loadDb([
+            'rasuvaeff/yii3-outbox-db' => ['table' => 'custom_outbox', 'table_prefix' => 'rsv_'],
+        ]);
+        $factory = $definitions[OutboxTableName::class];
+        Assert::true(is_callable($factory));
+
+        /** @var OutboxTableName $table */
+        $table = $factory();
+        Assert::same($table->value, 'rsv_custom_outbox');
     }
 
     public function storageFactoryBuildsDbStorage(): void
@@ -62,7 +79,10 @@ final class ConfigWiringTest
         $factory = $definitions[StorageInterface::class];
         Assert::true(is_callable($factory));
 
-        $storage = $factory($this->sqlite());
+        $tableFactory = $definitions[OutboxTableName::class];
+        Assert::true(is_callable($tableFactory));
+
+        $storage = $factory($this->sqlite(), $tableFactory());
         Assert::instanceOf($storage, StorageInterface::class);
 
         return $storage;

@@ -9,7 +9,6 @@ $finder = (new Finder())
     ->in([
         __DIR__ . '/benchmarks',
         __DIR__ . '/src',
-        __DIR__ . '/migrations',
         __DIR__ . '/tests',
     ]);
 

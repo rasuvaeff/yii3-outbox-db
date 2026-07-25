@@ -17,13 +17,20 @@ final readonly class DbOutboxStorage implements StorageInterface
 {
     private OutboxRowMapper $mapper;
 
+    private string $table;
+
     /**
      * @param non-empty-string $table
+     *
+     * @throws \InvalidArgumentException when the name is not a valid identifier
      */
     public function __construct(
         private ConnectionInterface $db,
-        private string $table = 'outbox',
+        string $table = 'outbox',
     ) {
+        // validation lives in the value object, so the storage and the bundled
+        // migration cannot disagree about what a valid table name is
+        $this->table = (new OutboxTableName($table))->value;
         $this->mapper = new OutboxRowMapper();
     }
 

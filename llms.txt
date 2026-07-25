@@ -44,16 +44,23 @@ $purged  = $storage->deleteByStatus(OutboxStatus::Published);
 
 ## Migration
 
-```php
-use M260611000000CreateOutboxTable;
+Class: `Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable`
+(namespaced since 2.0). Register BY NAMESPACE:
 
-(new M260611000000CreateOutboxTable())->up($migrationBuilder);          // table "outbox"
-(new M260611000000CreateOutboxTable(table: 'my_outbox'))->up($builder); // custom name
+```php
+MigrationService::class => [
+    'setSourceNamespaces()' => [['App\\Migration', 'Rasuvaeff\\Yii3OutboxDb\\Migration']],
+],
 ```
 
+Table name: params only (`table_prefix` + `table`) => `OutboxTableName` (VO) =>
+both the storage and the migration. Configuring the migration through the
+container does NOT work (Injector::make() resolves by type, not by class-id)
+and adding such a definition fatals the container on every request.
+
 Columns: `id` (PK), `type`, `payload`, `status`, `created_at`, `attempts`,
-`last_attempt_at`, `aggregate_id`. Index `idx_outbox_status_type` backs the
-pending poll.
+`last_attempt_at`, `aggregate_id`, `claimed_by`. Index `idx_<table>_pending`
+backs the pending poll.
 
 ## DI / params
 
