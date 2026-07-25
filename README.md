@@ -30,14 +30,48 @@ composer require rasuvaeff/yii3-outbox-db
 
 ### Migration
 
-Apply the bundled migration to create the `outbox` table (default name `outbox`):
+Register the bundled migration **by namespace** — no vendor paths:
 
 ```php
-use M260611000000CreateOutboxTable;
+// config/common/di/migration.php
+use Yiisoft\Db\Migration\Service\MigrationService;
 
-(new M260611000000CreateOutboxTable())->up($migrationBuilder);
-// custom table: new M260611000000CreateOutboxTable(table: 'my_outbox')
+return [
+    MigrationService::class => [
+        'setSourceNamespaces()' => [[
+            'App\\Migration',
+            'Rasuvaeff\\Yii3OutboxDb\\Migration',
+        ]],
+    ],
+];
 ```
+
+```bash
+./yii migrate:up
+```
+
+Set the table name in params — the same value reaches the migration **and**
+`DbOutboxStorage`:
+
+```php
+// config/common/params.php
+'rasuvaeff/yii3-outbox-db' => [
+    'table' => 'my_outbox',
+    'table_prefix' => '',   // prepended to `table`; e.g. 'rsv_' → rsv_my_outbox
+],
+```
+
+Index names follow the table name (`idx_my_outbox_pending`), so two
+installations can share one PostgreSQL schema — index names are unique per
+schema there, not per table.
+
+> **Do not configure the migration through the DI container.**
+> `M...::class => ['__construct()' => ['table' => ...]]` does not work: the
+> migration is built by `Injector::make()`, which resolves arguments by type
+> and never reads a container definition keyed by the migration's own class.
+> Worse, adding that definition makes the container fatal at build time in
+> **every** request, because the class is not autoloadable until the migration
+> runner requires it. That recipe was documented in 1.x; it never worked.
 
 ### Recording and processing
 

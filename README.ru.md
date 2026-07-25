@@ -32,14 +32,48 @@ composer require rasuvaeff/yii3-outbox-db
 
 ### Миграция
 
-Примените поставляемую миграцию, чтобы создать таблицу `outbox` (имя по умолчанию `outbox`):
+Регистрируйте поставляемую миграцию **по namespace** — без путей в `vendor/`:
 
 ```php
-use M260611000000CreateOutboxTable;
+// config/common/di/migration.php
+use Yiisoft\Db\Migration\Service\MigrationService;
 
-(new M260611000000CreateOutboxTable())->up($migrationBuilder);
-// custom table: new M260611000000CreateOutboxTable(table: 'my_outbox')
+return [
+    MigrationService::class => [
+        'setSourceNamespaces()' => [[
+            'App\\Migration',
+            'Rasuvaeff\\Yii3OutboxDb\\Migration',
+        ]],
+    ],
+];
 ```
+
+```bash
+./yii migrate:up
+```
+
+Имя таблицы задаётся в params — то же значение получают и миграция, и
+`DbOutboxStorage`:
+
+```php
+// config/common/params.php
+'rasuvaeff/yii3-outbox-db' => [
+    'table' => 'my_outbox',
+    'table_prefix' => '',   // добавляется перед `table`; например 'rsv_' → rsv_my_outbox
+],
+```
+
+Имена индексов следуют за именем таблицы (`idx_my_outbox_pending`), поэтому
+две инсталляции могут делить одну схему PostgreSQL — там имена индексов
+уникальны в пределах схемы, а не таблицы.
+
+> **Не настраивайте миграцию через DI-контейнер.**
+> `M...::class => ['__construct()' => ['table' => ...]]` не работает: миграцию
+> создаёт `Injector::make()`, который резолвит аргументы по типу и никогда не
+> читает определение контейнера по имени класса самой миграции. Хуже того,
+> добавление такого определения роняет контейнер на этапе сборки в **каждом**
+> запросе, потому что класс не автозагружается, пока его не подключит раннер
+> миграций. Этот рецепт был описан в 1.x и никогда не работал.
 
 ### Запись и обработка
 

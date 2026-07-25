@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+namespace Rasuvaeff\Yii3OutboxDb\Migration;
+
+use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Yiisoft\Db\Migration\MigrationBuilder;
 use Yiisoft\Db\Migration\RevertibleMigrationInterface;
 use Yiisoft\Db\Migration\TransactionalMigrationInterface;
@@ -9,34 +12,33 @@ use Yiisoft\Db\Migration\TransactionalMigrationInterface;
 /**
  * Creates the outbox table used by {@see \Rasuvaeff\Yii3OutboxDb\DbOutboxStorage}.
  *
- * The table name defaults to `outbox` and must match the `table` argument of
- * {@see \Rasuvaeff\Yii3OutboxDb\DbOutboxStorage}. To use a custom name, bind the
- * constructor argument in your DI configuration:
+ * The table name comes from {@see OutboxTableName}, which `config/di.php`
+ * builds from params — one source of truth for the migration and the
+ * runtime code alike. Register the migration by namespace:
  *
  * ```php
- * M260611000000CreateOutboxTable::class => [
- *     '__construct()' => ['table' => 'my_outbox'],
+ * MigrationService::class => [
+ *     'setSourceNamespaces()' => [['Rasuvaeff\Yii3OutboxDb\Migration']],
  * ],
  * ```
  *
- * The `idx_outbox_status_type` index backs `findPending(array $types, int $limit)`:
+ * The `idx_<table>_pending` index backs `findPending(array $types, int $limit)`:
  * the pending poll filters on `status` and (optionally) `type`, ordered by
  * `created_at`.
+ *
+ * @api
  */
 final class M260611000000CreateOutboxTable implements RevertibleMigrationInterface, TransactionalMigrationInterface
 {
-    /**
-     * @param non-empty-string $table
-     */
     public function __construct(
-        private readonly string $table = 'outbox',
+        private readonly OutboxTableName $table = new OutboxTableName(),
     ) {}
 
     #[\Override]
     public function up(MigrationBuilder $b): void
     {
         $b->createTable(
-            $this->table,
+            $this->table->value,
             [
                 'id' => 'string(255) NOT NULL PRIMARY KEY',
                 'type' => 'string(255) NOT NULL',
@@ -50,12 +52,19 @@ final class M260611000000CreateOutboxTable implements RevertibleMigrationInterfa
             ],
         );
 
-        $b->createIndex($this->table, 'idx_outbox_pending', ['status', 'type', 'created_at']);
+        // index names follow the table name: in PostgreSQL they are unique per
+        // schema, so two installations sharing one schema would collide on a
+        // hard-coded name
+        $b->createIndex(
+            $this->table->value,
+            sprintf('idx_%s_pending', $this->table->forIndexName()),
+            ['status', 'type', 'created_at'],
+        );
     }
 
     #[\Override]
     public function down(MigrationBuilder $b): void
     {
-        $b->dropTable($this->table);
+        $b->dropTable($this->table->value);
     }
 }
