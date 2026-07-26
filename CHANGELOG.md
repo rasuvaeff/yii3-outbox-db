@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Document `claim()`. It is the atomic primitive a worker must use — and the one
+  `Processor` calls — but the storage API tables in `README.md`, `README.ru.md`
+  and `llms.txt` omitted it entirely, and the worker example showed
+  `findPending()` instead. Following the docs gave non-atomic polling: two
+  workers pick up the same row and publish it twice.
+- Spell out the operational consequences: every claimed message must reach a
+  terminal state or it stays `Processing`, and independent consumers sharing one
+  outbox must not overlap in their `types` sets.
+
 ## 2.0.0 — 2026-07-25
 
 **Breaking.** See [UPGRADE.md](UPGRADE.md) — an installation that already

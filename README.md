@@ -85,8 +85,8 @@ $outbox = new Outbox(storage: $storage, clock: $clock);
 // request path — durable, no network call to the sink
 $outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
 
-// worker — fetch a batch of one consumer's types and process them
-$pending = $storage->findPending(types: ['ab.exposure', 'ab.conversion'], limit: 1000);
+// worker — atomically claim a batch of one consumer's types and process them
+$claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000);
 ```
 
 ### Storage API
@@ -94,15 +94,35 @@ $pending = $storage->findPending(types: ['ab.exposure', 'ab.conversion'], limit:
 | Method | Purpose |
 |---|---|
 | `save(OutboxMessage)` | upsert by `id` (initial record or retry re-save) |
-| `findPending(array $types = [], int $limit = 1000)` | pending rows, optional type filter, `created_at` ASC |
+| `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `created_at` ASC |
+| `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `created_at` ASC |
 | `markPublished(OutboxMessage)` | re-save with `Published` status |
 | `markFailed(OutboxMessage)` | re-save with `Failed` status |
 | `getById(string $id)` | single message or `null` |
 | `deleteByStatus(OutboxStatus)` | housekeeping (e.g. purge `Published`) |
 
-`findPending`'s `$types` filter lets several consumers — a generic `Processor`
-and a specialized exporter — share one outbox without competing for each other's
-messages.
+#### `claim()` vs `findPending()`
+
+`claim()` is the primitive a worker must use, and the one `Processor` calls.
+It runs inside a transaction: it selects the pending ids, stamps them
+`Processing` with a random `claimed_by` token, then re-reads exactly the rows
+carrying that token. Two workers polling concurrently therefore never receive
+the same message.
+
+`findPending()` is a plain read. Nothing is locked or marked, so two workers
+polling it both get the same rows and publish the same message twice. Use it
+for dashboards, admin screens and diagnostics — never as a worker's fetch.
+
+Every claimed message must reach a terminal state: `markPublished()`,
+`markFailed()`, or `save($message->withStatus(OutboxStatus::Pending))` to
+release it. A worker that crashes mid-batch leaves rows in `Processing`; they
+stay there until something puts them back, so treat a growing `Processing`
+count as an alert.
+
+The `$types` filter lets several consumers — a generic `Processor` and a
+specialized exporter — share one outbox. Because `claim()` hands each message
+to exactly one caller, their type sets must not overlap: a message matching
+both is delivered only to whichever worker claimed it first.
 
 ### Yii3 DI
 

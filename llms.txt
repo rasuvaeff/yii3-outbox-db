@@ -13,9 +13,16 @@ composer require rasuvaeff/yii3-outbox-db
 - `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\StorageInterface`.
 - `save()` upserts by `OutboxMessage::getId()` — the durable identity and the
   at-least-once dedup anchor; never regenerate it.
-- `findPending(array $types = [], int $limit = 1000)`: `Pending` rows, optional
-  type filter (empty = all), ordered by `created_at` ASC. Lets several consumers
-  share one outbox.
+- `claim(array $types = [], int $limit = 1000)`: **what workers must use.**
+  In one transaction: flips up to `$limit` `Pending` rows to `Processing` with a
+  random `claimed_by` token and returns exactly those rows, `created_at` ASC.
+  Concurrent workers never get the same message. Every claimed message must end
+  in `markPublished()`, `markFailed()` or `save($msg->withStatus(Pending))`.
+- `findPending(array $types = [], int $limit = 1000)`: read-only listing of
+  `Pending` rows, optional type filter (empty = all), `created_at` ASC. No
+  atomicity — two workers get the same rows. Dashboards only, never a worker.
+- Type filter lets several consumers share one outbox; their type sets must not
+  overlap, since `claim()` gives a message to exactly one caller.
 - `markPublished`/`markFailed` re-save with the new status, preserving the
   attempt count / `last_attempt_at` of the passed message.
 - Datetimes stored as `Y-m-d H:i:s` UTC strings.
@@ -35,7 +42,8 @@ $storage = new DbOutboxStorage(db: $connection, table: 'outbox');
 $outbox = new Outbox(storage: $storage, clock: $clock);
 $outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
 
-$pending = $storage->findPending(types: ['ab.exposure'], limit: 1000);
+$claimed = $storage->claim(types: ['ab.exposure'], limit: 1000);  // workers
+$pending = $storage->findPending(types: ['ab.exposure'], limit: 1000); // read-only
 $storage->markPublished($message);
 $storage->markFailed($message);
 $message = $storage->getById($id);          // ?OutboxMessage
