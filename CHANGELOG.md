@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.1 — 2026-07-26
 
 - Document `claim()`. It is the atomic primitive a worker must use — and the one
   `Processor` calls — but the storage API tables in `README.md`, `README.ru.md`
