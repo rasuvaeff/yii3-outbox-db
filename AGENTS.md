@@ -111,7 +111,7 @@ publishes core first.
 
 ## When you finish
 
-- Update `README.md` (and `examples/` if usage changed); update `CHANGELOG.md`
-  when releasing.
+- Update `README.md` **and `README.ru.md`** (both languages, same commit; and
+  `examples/` if usage changed); update `CHANGELOG.md` when releasing.
 - Re-run `composer build` (monorepo-root mount); if the change affects the
   public API or release process, also run `make release-check`. Paste the output.
