@@ -87,8 +87,8 @@ $outbox = new Outbox(storage: $storage, clock: $clock);
 // request path — durable, no network call to the sink
 $outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
 
-// worker — fetch a batch of one consumer's types and process them
-$pending = $storage->findPending(types: ['ab.exposure', 'ab.conversion'], limit: 1000);
+// worker — атомарно захватить пачку типов одного потребителя и обработать
+$claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000);
 ```
 
 ### API хранилища
@@ -96,15 +96,36 @@ $pending = $storage->findPending(types: ['ab.exposure', 'ab.conversion'], limit:
 | Метод | Назначение |
 |---|---|
 | `save(OutboxMessage)` | upsert по `id` (первичная запись или пересохранение при retry) |
-| `findPending(array $types = [], int $limit = 1000)` | строки в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
+| `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `created_at` ASC |
+| `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
 | `markPublished(OutboxMessage)` | пересохранить со статусом `Published` |
 | `markFailed(OutboxMessage)` | пересохранить со статусом `Failed` |
 | `getById(string $id)` | одно сообщение или `null` |
 | `deleteByStatus(OutboxStatus)` | очистка (например, удалить всё со статусом `Published`) |
 
-Фильтр `$types` метода `findPending` позволяет нескольким потребителям —
-универсальному `Processor` и специализированному экспортёру — совместно
-использовать один outbox, не конкурируя за сообщения друг друга.
+#### `claim()` против `findPending()`
+
+`claim()` — примитив, который обязан использовать воркер, и именно его вызывает
+`Processor`. Он работает внутри транзакции: выбирает id ожидающих строк,
+проставляет им `Processing` и случайный токен `claimed_by`, затем перечитывает
+ровно те строки, что несут этот токен. Два воркера, опрашивающие таблицу
+одновременно, никогда не получат одно и то же сообщение.
+
+`findPending()` — обычное чтение. Ничего не блокируется и не помечается, поэтому
+два воркера получат одни и те же строки и опубликуют сообщение дважды.
+Используйте его для дашбордов, админок и диагностики — но не как выборку воркера.
+
+Каждое захваченное сообщение обязано дойти до терминального состояния:
+`markPublished()`, `markFailed()` или `save($message->withStatus(OutboxStatus::Pending))`
+для освобождения. Воркер, упавший посреди пачки, оставляет строки в `Processing`;
+они останутся там, пока их кто-нибудь не вернёт, — поэтому растущее число
+`Processing` стоит считать поводом для алерта.
+
+Фильтр `$types` позволяет нескольким потребителям — универсальному `Processor`
+и специализированному экспортёру — совместно использовать один outbox.
+Поскольку `claim()` отдаёт каждое сообщение ровно одному вызывающему, их наборы
+типов не должны пересекаться: сообщение, подходящее обоим, дойдёт только до
+того воркера, который захватил его первым.
 
 ### Yii3 DI
 
