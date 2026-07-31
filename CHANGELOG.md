@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.2 — 2026-08-01
 
 - Docs: the documented `setSourceNamespaces()` migration registration does not
   find the bundled migration and never has — `yiisoft/db-migration` matches the
