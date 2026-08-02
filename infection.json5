@@ -8,6 +8,25 @@
         "summary": "build/infection-summary.log"
     },
     "testFramework": "testo",
+    // ER-003: Exception\InvalidOutboxRowException (thrown throughout
+    // OutboxRowMapper) is now credited in OutboxRowMapperTest's #[Covers]. It
+    // is a bare marker class (`extends \InvalidArgumentException {}`, no body)
+    // with zero mutable statements — confirmed empirically: Total stayed 91
+    // before/after adding the attribution, no mutant was ever generated for
+    // the exception class itself. Two pre-existing OutboxRowMapper survivors
+    // that verify the exception is thrown correctly were closed alongside it
+    // (throwsOnNonStringColumn, throwsOnAttemptsWithEmbeddedDigits).
+    //
+    // Remaining 7 survivors, none touched by the above:
+    //  - OutboxRowMapper::extractInt Throw_ (:146, the "missing" branch) is
+    //    equivalent: the guarded throw and the unguarded fallback throw at
+    //    :159-161 build the exact same message
+    //    (`Missing or invalid column "%s" in outbox row`), so removing the
+    //    `throw` keyword just makes the code fall through to an
+    //    indistinguishable throw two lines later.
+    //  - DbOutboxStorage::claim (:76, :77, :87, :90 x2, :100) are pre-existing,
+    //    unrelated to this exception's attribution gap — untouched by this
+    //    change (identical before/after), out of scope here.
     "minMsi": 85,
     "mutators": {
         "@default": true
