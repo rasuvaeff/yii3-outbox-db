@@ -14,7 +14,7 @@ Public API:
   `markFailed`, `getById`, `deleteByStatus`.
 - `OutboxRowMapper` (`@internal`) — DB row → `OutboxMessage`, with validation.
 - `Exception\InvalidOutboxRowException` — thrown on corrupt rows.
-- `migrations/M260611000000CreateOutboxTable` — the `outbox` table.
+- `Migration\M260611000000CreateOutboxTable` — the `outbox` table.
 
 The core contracts (`Outbox`, `OutboxMessage`, `StorageInterface`, `RetryPolicy`,
 `Processor`) live in `rasuvaeff/yii3-outbox`.
@@ -89,6 +89,12 @@ publishes core first.
   infection like any other source file. `MigrationTableNameTest` asserts the
   column set and the index's columns — without it, `ArrayItemRemoval` mutants in
   `createTable`/`createIndex` escape and the MSI gate fails.
+- `setSourceNamespaces()` does NOT find them on any released
+  `yiisoft/db-migration` (≤ 2.0.1): it matches the PSR-4 map by string prefix,
+  so `Rasuvaeff\Yii3OutboxDb\Migration` resolves into the core package and
+  discovery silently finds zero — `migrate:up` exits 0 having created nothing.
+  Until an upstream release carries the fix, migrations are applied directly via
+  `Injector::make($class)->up($builder)` — see the README.
 - `composer test` runs only the Unit suite; `composer mutation` runs every
   suite. An integration test left pointing at `migrations/` passes the first and
   fails the second.
