@@ -16,6 +16,7 @@ use Testo\Test;
 
 #[Test]
 #[Covers(OutboxRowMapper::class)]
+#[Covers(InvalidOutboxRowException::class)]
 final class OutboxRowMapperTest
 {
     private OutboxRowMapper $mapper;
@@ -107,6 +108,30 @@ final class OutboxRowMapperTest
         Expect::exception(InvalidOutboxRowException::class);
 
         $this->mapper->map($this->validRow(['attempts' => 'x']));
+    }
+
+    public function throwsOnAttemptsWithEmbeddedDigits(): void
+    {
+        Expect::exception(InvalidOutboxRowException::class);
+
+        $this->mapper->map($this->validRow(['attempts' => 'x3']));
+    }
+
+    #[DataProvider('nonStringColumnProvider')]
+    public function throwsOnNonStringColumn(string $column): void
+    {
+        Expect::exception(InvalidOutboxRowException::class);
+
+        $this->mapper->map($this->validRow([$column => 123]));
+    }
+
+    public static function nonStringColumnProvider(): iterable
+    {
+        yield 'id' => ['id'];
+        yield 'type' => ['type'];
+        yield 'payload' => ['payload'];
+        yield 'status' => ['status'];
+        yield 'created_at' => ['created_at'];
     }
 
     #[DataProvider('missingColumnProvider')]
