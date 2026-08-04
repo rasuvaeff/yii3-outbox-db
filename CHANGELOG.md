@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3 — 2026-08-04
+
+### Fixed
+
+- Require `yiisoft/db-migration` ^2.1, which fixes `setSourceNamespaces()` matching a sibling namespace as a parent (upstream [yiisoft/db-migration#350](https://github.com/yiisoft/db-migration/pull/350)). Drop the manual `Injector::make()` migration workaround from both READMEs.
+
 ## 2.0.2 — 2026-08-01
 
 - Docs: the documented `setSourceNamespaces()` migration registration does not

@@ -52,42 +52,9 @@ return [
 ./yii migrate:up
 ```
 
-> **Внимание: сниппет выше пока не находит миграцию.** Это правильная
-> конфигурация, и она заработает без единой правки с вашей стороны, как только
-> починят описанный ниже баг апстрима — но сегодня `./yii migrate:up` печатает
-> «Your system is up-to-date», возвращает 0 и не создаёт таблиц.
->
-> `yiisoft/db-migration` (2.0.x) резолвит namespace в каталог так: берёт первую
-> запись в `composer/autoload_psr4.php`, с которой namespace начинается,
-> сравнивая с ключом без завершающего разделителя, а остаток отрезает по
-> *необрезанной* длине. Обрезание разделителя стирает границу сегмента, поэтому
-> `Rasuvaeff\Yii3Outbox\` совпадает с `Rasuvaeff\Yii3OutboxDb\Migration`
-> так, будто является его родителем — а этот пакет от него зависит, то есть
-> коллизия есть всегда. Полученного каталога не существует, несуществующие
-> каталоги discovery пропускает молча, и ничего не применяется.
-
-Пока это не починено в апстриме, применяйте поставляемую миграцию сами:
-
-```php
-// src/Console/MigrateCommand.php (фрагмент)
-use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
-use Yiisoft\Db\Migration\Informer\ConsoleMigrationInformer;
-use Yiisoft\Db\Migration\MigrationBuilder;
-use Yiisoft\Injector\Injector;
-
-$builder = new MigrationBuilder($db, new ConsoleMigrationInformer());
-$injector = new Injector($container);
-
-foreach ([
-    M260611000000CreateOutboxTable::class,
-] as $class) {
-    $injector->make($class)->up($builder);
-}
-```
-
-`Injector::make()` обязателен вместо `new`: он резолвит value object имени
-таблицы из вашей конфигурации. Держите цикл идемпотентным (пропускать, если
-таблица уже есть) — собственной истории миграций у него нет.
+`yiisoft/db-migration` строит миграцию через `Injector::make()`, поэтому она
+получает value object имени таблицы из контейнера так же, как и хранилище —
+никакой ручной проводки сверх `setSourceNamespaces()` выше не нужно.
 
 Имя таблицы задаётся в params — то же значение получают и миграция, и
 `DbOutboxStorage`:
