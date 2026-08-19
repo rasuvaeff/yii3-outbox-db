@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Required migration.** `claim()` writes the new `claimed_at` column, so
+`M260820000000AddOutboxClaimedAt` must run **before** the new code is deployed.
+See [`UPGRADE.md`](UPGRADE.md) — it also explains what the first
+`releaseStaleClaims()` call does to rows stuck from before the upgrade.
+
 ### Added
 
 - `DbOutboxStorage::findStaleClaims()` and `releaseStaleClaims()`, plus the
