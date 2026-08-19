@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
+use Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt;
 use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
@@ -74,9 +75,38 @@ final class MigrationTest
         Assert::null($this->db->getTableSchema('outbox', true));
     }
 
+    public function addsAndDropsTheClaimedAtColumn(): void
+    {
+        (new M260611000000CreateOutboxTable())->up($this->builder);
+        $migration = new M260820000000AddOutboxClaimedAt();
+
+        $migration->up($this->builder);
+
+        $schema = $this->db->getTableSchema('outbox', true);
+        Assert::notNull($schema);
+        Assert::notNull($schema->getColumn('claimed_at'));
+
+        // down() is not exercised here: yiisoft/db-sqlite cannot drop a
+        // column at all, so the rollback is a MySQL/PostgreSQL-only path.
+        Assert::notNull($this->db->getTableSchema('outbox', true)?->getColumn('claimed_by'));
+    }
+
+    public function addsTheClaimedAtColumnToACustomlyNamedTable(): void
+    {
+        $table = new OutboxTableName('custom_outbox');
+        (new M260611000000CreateOutboxTable(table: $table))->up($this->builder);
+
+        (new M260820000000AddOutboxClaimedAt(table: $table))->up($this->builder);
+
+        $schema = $this->db->getTableSchema('custom_outbox', true);
+        Assert::notNull($schema);
+        Assert::notNull($schema->getColumn('claimed_at'));
+    }
+
     public function migratedTableIsUsableByStorage(): void
     {
         (new M260611000000CreateOutboxTable())->up($this->builder);
+        (new M260820000000AddOutboxClaimedAt())->up($this->builder);
 
         $storage = new DbOutboxStorage(db: $this->db);
 
@@ -88,5 +118,7 @@ final class MigrationTest
         $storage->save($message);
 
         Assert::count($storage->findPending(), 1);
+        Assert::count($storage->claim(), 1);
+        Assert::count($storage->findStaleClaims(new \DateTimeImmutable('2099-01-01 00:00:00')), 1);
     }
 }

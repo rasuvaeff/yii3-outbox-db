@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `DbOutboxStorage::findStaleClaims()` and `releaseStaleClaims()`, plus the
+  `claimed_at` column they need (migration
+  `M260820000000AddOutboxClaimedAt`). A worker killed between `claim()` and the
+  finalising write left its rows in `Processing` with no way out: `claimed_by`
+  alone cannot tell a fresh claim from an abandoned one, and the API offered no
+  way to find or release them, so the operator wrote SQL by hand in production
+  ([#19](https://github.com/rasuvaeff/yii3-outbox-db/issues/19)).
+- A property over `OutboxRowMapper`: every message the storage writes maps back
+  to itself, for any id, type, payload, status, attempt count, aggregate id and
+  datetime (including non-UTC input).
+- An integration test claiming from two connections to one database — the
+  conditional `UPDATE` that makes `claim()` safe for concurrent workers had no
+  regression test, because a single connection cannot tell it from a plain
+  `SELECT` + `UPDATE`.
+
+### Changed
+
+- `DbOutboxStorage` accepts an optional `Psr\Clock\ClockInterface`, used to
+  stamp `claimed_at`. Without one it reads the system clock in UTC.
+- Document the MySQL `TEXT` ceiling on `payload` (65,535 bytes; unbounded on
+  PostgreSQL and SQLite), what happens when a payload exceeds it, and the
+  one-line `ALTER` for installations that need more. Deliberately not a
+  migration: 64 KB is generous for a domain event, and widening the column
+  would force a table rebuild on every MySQL installation for a case most never
+  hit ([#20](https://github.com/rasuvaeff/yii3-outbox-db/issues/20)).
+- Correct the migration/DI warning in both READMEs: configuring the migration
+  through a container definition keyed by its own class still has no effect
+  (`Injector::make()` resolves by type), but it no longer breaks container
+  build — migrations have lived under the package's PSR-4 namespace since 2.0.0,
+  so the class autoloads like any other.
+- Raise the Infection gate from `minMsi` 85 to 90 (the suite scores 93.6%).
+- Development tooling: `rasuvaeff/rector-named-literals` in the rector set,
+  `rasuvaeff/property-testing-testo` added, a narrow change filter for the
+  mutation job, and a cached property regression corpus.
+
 ## 2.0.3 — 2026-08-04
 
 ### Fixed

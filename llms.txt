@@ -25,6 +25,21 @@ composer require rasuvaeff/yii3-outbox-db
   overlap, since `claim()` gives a message to exactly one caller.
 - `markPublished`/`markFailed` re-save with the new status, preserving the
   attempt count / `last_attempt_at` of the passed message.
+- `claim()` also stamps `claimed_at`; `save()` clears `claimed_by`/`claimed_at`.
+- `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` /
+  `releaseStaleClaims(...)`: rows still `Processing` whose claim is older than
+  the threshold (a `claimed_at` of NULL counts as stale), and putting them back
+  to `Pending` without spending an attempt. This is the recovery path for a
+  worker killed mid-batch — run it from cron with a threshold longer than the
+  slowest batch.
+- Migrations: `M260611000000CreateOutboxTable`, then
+  `M260820000000AddOutboxClaimedAt` (adds `claimed_at` + processing index;
+  `down()` is MySQL/PostgreSQL only, SQLite cannot drop a column).
+- `payload` is `TEXT`: unbounded on PostgreSQL/SQLite, 65,535 bytes on MySQL.
+  Not widened by a migration on purpose; `ALTER TABLE outbox MODIFY payload
+  MEDIUMTEXT NOT NULL` if your events need it.
+- `DbOutboxStorage` takes an optional `Psr\Clock\ClockInterface` (used for
+  `claimed_at`); without one it reads the system clock in UTC.
 - Datetimes stored as `Y-m-d H:i:s` UTC strings.
 - Corrupt rows → `InvalidOutboxRowException` (never silently coerced).
 - Core `yii3-outbox` ships no `config/di.php`; this backend (or the app) is the
