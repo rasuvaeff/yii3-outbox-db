@@ -18,6 +18,7 @@ use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
+use Yiisoft\Test\Support\Clock\StaticClock;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
 #[Test]
@@ -26,10 +27,28 @@ final class SqliteIntegrationTest
 {
     private ConnectionInterface $db;
 
+    /**
+     * A file-backed database rather than `:memory:` — two connections to
+     * `:memory:` are two different databases, and the concurrent-claim test
+     * needs both workers looking at the same rows.
+     */
+    private string $dsn;
+
+    private string $file;
+
     #[BeforeTest]
     public function setUp(): void
     {
-        $driver = new SqliteDriver(dsn: 'sqlite::memory:');
+        $file = tempnam(sys_get_temp_dir(), 'outbox-db-');
+
+        if ($file === false) {
+            throw new \RuntimeException('Cannot create a temporary SQLite file');
+        }
+
+        $this->file = $file;
+        $this->dsn = 'sqlite:' . $this->file;
+
+        $driver = new SqliteDriver(dsn: $this->dsn);
         $schemaCache = new SchemaCache(psrCache: new MemorySimpleCache());
         $this->db = new SqliteConnection(driver: $driver, schemaCache: $schemaCache);
         $this->db->open();
@@ -41,6 +60,10 @@ final class SqliteIntegrationTest
     public function tearDown(): void
     {
         $this->db->close();
+
+        if (file_exists($this->file)) {
+            unlink($this->file);
+        }
     }
 
     public function savesAndReadsBackMessage(): void
@@ -263,9 +286,155 @@ final class SqliteIntegrationTest
         $this->createStorage()->findPending();
     }
 
-    private function createStorage(): DbOutboxStorage
+    public function claimStampsClaimedAt(): void
     {
-        return new DbOutboxStorage(db: $this->db);
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+
+        $storage->claim();
+
+        $rows = iterator_to_array($this->allRows());
+        Assert::same($rows[0]['claimed_at'], '2026-08-20 10:00:00');
+        Assert::notNull($rows[0]['claimed_by']);
+    }
+
+    public function savingAClaimedMessageClearsTheClaim(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+
+        $claimed = $storage->claim();
+        $storage->save($claimed[0]->withStatus(OutboxStatus::Pending));
+
+        $rows = iterator_to_array($this->allRows());
+        Assert::null($rows[0]['claimed_at']);
+        Assert::null($rows[0]['claimed_by']);
+    }
+
+    public function findStaleClaimsReturnsOnlyClaimsOlderThanTheThreshold(): void
+    {
+        $old = $this->createStorage(now: '2026-08-20 10:00:00');
+        $old->save($this->pending(id: 'old', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $old->claim();
+
+        $fresh = $this->createStorage(now: '2026-08-20 10:30:00');
+        $fresh->save($this->pending(id: 'fresh', type: 'ab.exposure', createdAt: '2026-08-20 09:30:00'));
+        $fresh->claim();
+
+        $stale = $fresh->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'));
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $stale), ['old']);
+    }
+
+    public function findStaleClaimsTreatsAClaimWithoutATimestampAsStale(): void
+    {
+        // A row claimed by a worker that ran before the claimed_at column
+        // existed. Excluding it would strand it forever, which is exactly the
+        // state this API exists to end.
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'legacy', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $storage->claim();
+        $this->db->createCommand(sql: "UPDATE outbox SET claimed_at = NULL WHERE id = 'legacy'")->execute();
+
+        $stale = $storage->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'));
+
+        Assert::count($stale, 1);
+        Assert::same($stale[0]->getId(), 'legacy');
+    }
+
+    public function findStaleClaimsReturnsEveryStuckRowOldestFirst(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'second', type: 'ab.exposure', createdAt: '2026-08-20 09:30:00'));
+        $storage->save($this->pending(id: 'first', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $storage->claim();
+
+        $stale = $storage->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'));
+
+        // Both rows, and in the order a worker would re-process them.
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $stale), ['first', 'second']);
+    }
+
+    public function releaseStaleClaimsPutsMessagesBackWithoutSpendingAnAttempt(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $storage->claim();
+
+        $released = $storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'));
+
+        Assert::same($released, 1);
+        $message = $storage->getById('a');
+        Assert::notNull($message);
+        Assert::same($message->getStatus(), OutboxStatus::Pending);
+        Assert::same($message->getAttempts(), 0);
+        $rows = iterator_to_array($this->allRows());
+        Assert::null($rows[0]['claimed_by']);
+        Assert::null($rows[0]['claimed_at']);
+        Assert::count($storage->claim(), 1);
+    }
+
+    public function releaseStaleClaimsLeavesFreshClaimsAlone(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $storage->claim();
+
+        Assert::same($storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 09:59:00')), 0);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Processing);
+    }
+
+    public function releaseStaleClaimsIsBoundedByItsLimit(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+
+        foreach (['a', 'b', 'c'] as $index => $id) {
+            $storage->save($this->pending(id: $id, type: 'ab.exposure', createdAt: '2026-08-20 09:0' . $index . ':00'));
+        }
+
+        $storage->claim();
+
+        Assert::same($storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'), limit: 2), 2);
+        Assert::count($storage->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00')), 1);
+    }
+
+    public function twoConnectionsNeverClaimTheSameMessage(): void
+    {
+        // The conditional UPDATE is what makes claim() safe for concurrent
+        // workers; a single-connection test cannot tell it apart from a plain
+        // SELECT + UPDATE.
+        $second = new SqliteConnection(
+            driver: new SqliteDriver(dsn: $this->dsn),
+            schemaCache: new SchemaCache(psrCache: new MemorySimpleCache()),
+        );
+        $second->open();
+
+        $storage = $this->createStorage();
+        $other = new DbOutboxStorage(db: $second);
+
+        foreach (['a', 'b', 'c', 'd'] as $index => $id) {
+            $storage->save($this->pending(id: $id, type: 'ab.exposure', createdAt: '2026-08-20 09:0' . $index . ':00'));
+        }
+
+        $first = $storage->claim(limit: 2);
+        $rest = $other->claim(limit: 10);
+
+        $firstIds = array_map(static fn(OutboxMessage $m): string => $m->getId(), $first);
+        $restIds = array_map(static fn(OutboxMessage $m): string => $m->getId(), $rest);
+
+        Assert::same($firstIds, ['a', 'b']);
+        Assert::same($restIds, ['c', 'd']);
+        Assert::same(array_intersect($firstIds, $restIds), []);
+
+        $second->close();
+    }
+
+    private function createStorage(?string $now = null): DbOutboxStorage
+    {
+        return new DbOutboxStorage(
+            db: $this->db,
+            clock: $now === null ? null : new StaticClock(new \DateTimeImmutable($now)),
+        );
     }
 
     private function pending(string $id, string $type, string $createdAt): OutboxMessage
@@ -291,7 +460,8 @@ final class SqliteIntegrationTest
                 attempts        INTEGER      NOT NULL DEFAULT 0,
                 last_attempt_at VARCHAR(30),
                 aggregate_id    VARCHAR(255),
-                claimed_by      VARCHAR(64)
+                claimed_by      VARCHAR(64),
+                claimed_at      VARCHAR(30)
             )
         ")->execute();
     }

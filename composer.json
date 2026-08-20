@@ -24,6 +24,7 @@
     },
     "require": {
         "php": "8.3 - 8.5",
+        "psr/clock": "^1.0",
         "rasuvaeff/yii3-outbox": "^1.0",
         "yiisoft/db": "^2.0",
         "yiisoft/db-migration": "^2.1"
@@ -33,6 +34,8 @@
         "friendsofphp/php-cs-fixer": "^3.95",
         "infection/infection": "^0.33",
         "maglnet/composer-require-checker": "^4.17",
+        "rasuvaeff/property-testing-testo": "^0.6",
+        "rasuvaeff/rector-named-literals": "^1.0",
         "rector/rector": "^2.4",
         "roave/backward-compatibility-check": "^8.0",
         "testo/bridge-infection": "^0.1.6",
@@ -41,7 +44,7 @@
         "yiisoft/cache": "^3.2",
         "yiisoft/db-sqlite": "^2.0",
         "yiisoft/injector": "^1.2",
-        "yiisoft/test-support": "^3.0"
+        "yiisoft/test-support": "^3.1"
     },
     "autoload": {
         "psr-4": {

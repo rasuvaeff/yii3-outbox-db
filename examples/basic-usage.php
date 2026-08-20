@@ -8,6 +8,7 @@ use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\Outbox;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
+use Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Migration\Informer\NullMigrationInformer;
 use Yiisoft\Db\Migration\MigrationBuilder;
@@ -30,11 +31,11 @@ $db->open();
 // the bundled migration is the schema's single source of truth — a hand-written
 // CREATE TABLE here silently drifts (this example used to miss `claimed_by`,
 // which claim() needs)
-(new M260611000000CreateOutboxTable())->up(
-    new MigrationBuilder(db: $db, informer: new NullMigrationInformer()),
-);
+$builder = new MigrationBuilder(db: $db, informer: new NullMigrationInformer());
+(new M260611000000CreateOutboxTable())->up($builder);
+(new M260820000000AddOutboxClaimedAt())->up($builder);
 
-$storage = new DbOutboxStorage(db: $db);
+$storage = new DbOutboxStorage(db: $db, clock: $clock);
 $outbox = new Outbox(storage: $storage, clock: $clock);
 
 echo "1. Record two events durably:\n";
@@ -56,5 +57,17 @@ echo '   pending ab.exposure now: ' . count($storage->findPending(types: ['ab.ex
 
 echo "4. The unrelated event is untouched:\n";
 echo '   pending order.created: ' . count($storage->findPending(types: ['order.created'])) . "\n";
+
+echo "5. A worker dies right after claiming — recovery puts the row back:\n";
+$storage->claim(types: ['order.created']);
+
+// Fifteen minutes later the claim is clearly abandoned: in a real worker the
+// threshold is `$clock->now()->modify('-15 minutes')`, computed at recovery
+// time. The clock above is frozen, so the example moves the threshold instead.
+$threshold = $clock->now()->modify('+15 minutes');
+
+echo '   stuck in Processing: ' . count($storage->findStaleClaims($threshold)) . "\n";
+echo '   released: ' . $storage->releaseStaleClaims($threshold) . "\n";
+echo '   pending order.created again: ' . count($storage->findPending(types: ['order.created'])) . "\n";
 
 $db->close();
