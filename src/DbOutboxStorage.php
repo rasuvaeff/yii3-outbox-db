@@ -158,9 +158,12 @@ final readonly class DbOutboxStorage implements StorageInterface
      * the ones a worker took and never finished, because it was killed, ran out
      * of memory or hit an exception nothing caught.
      *
-     * A row claimed by a worker that predates the `claimed_at` column has no
-     * timestamp at all; those count as stale, since they can only have been
-     * left behind by a version that is no longer running.
+     * A `Processing` row with no timestamp counts as stale. Two things produce
+     * one: a worker from a version that predates the column, and a caller that
+     * passed a `Processing` message to {@see self::save()}, which always clears
+     * `claimed_by` and `claimed_at`. Neither is owned by a live claim — that is
+     * what the missing `claimed_by` says — so releasing them is right in both
+     * cases.
      *
      * @param positive-int $limit
      *
@@ -203,10 +206,21 @@ final readonly class DbOutboxStorage implements StorageInterface
                 return 0;
             }
 
+            // The staleness predicate is repeated here on purpose. Selecting
+            // the ids and updating them are two statements, and between them a
+            // concurrent recovery can release a row and a worker can claim it
+            // again with a fresh timestamp. Updating on the id list alone would
+            // then reset that live claim to Pending and hand the message to a
+            // second worker while the first is still delivering it.
             return $this->db->createCommand()->update(
                 table: $this->table,
                 columns: ['status' => OutboxStatus::Pending->value, 'claimed_by' => null, 'claimed_at' => null],
-                condition: ['id' => $ids, 'status' => OutboxStatus::Processing->value],
+                condition: [
+                    'and',
+                    ['id' => $ids],
+                    ['status' => OutboxStatus::Processing->value],
+                    $this->staleCondition($claimedBefore),
+                ],
             )->execute();
         });
     }
@@ -224,12 +238,20 @@ final readonly class DbOutboxStorage implements StorageInterface
         return (new Query($this->db))
             ->from($this->table)
             ->where(condition: ['status' => OutboxStatus::Processing->value])
-            ->andWhere([
-                'or',
-                ['claimed_at' => null],
-                ['<', 'claimed_at', $this->mapper->formatDateTime($claimedBefore)],
-            ])
+            ->andWhere($this->staleCondition($claimedBefore))
             ->orderBy(['created_at' => SORT_ASC]);
+    }
+
+    /**
+     * @return array{0: string, 1: array{claimed_at: null}, 2: array{0: string, 1: string, 2: string}}
+     */
+    private function staleCondition(\DateTimeImmutable $claimedBefore): array
+    {
+        return [
+            'or',
+            ['claimed_at' => null],
+            ['<', 'claimed_at', $this->mapper->formatDateTime($claimedBefore)],
+        ];
     }
 
     private function now(): \DateTimeImmutable

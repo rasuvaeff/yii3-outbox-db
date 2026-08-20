@@ -88,14 +88,18 @@ force a table rebuild on every MySQL installation to raise it. If your events
 genuinely need more, widen the column yourself once:
 
 ```sql
+-- Substitute your configured table: `table_prefix` + `table` from params,
+-- `outbox` by default.
 ALTER TABLE outbox MODIFY payload MEDIUMTEXT NOT NULL;
 ```
 
 Know what the limit does if you hit it: in MySQL's strict mode (the default
 since 5.7) the insert fails, and because `Outbox::record()` runs inside your
 business transaction, that failure rolls back the business write too. In a
-permissive mode the payload is truncated instead, producing invalid JSON that
-a consumer rejects as terminal — the data is then lost on both sides.
+permissive mode the payload is silently truncated instead, and the message is
+published with whatever survived the cut — a JSON payload will almost always be
+left unparseable, and one that does parse is worse, because the consumer accepts
+a corrupted event without noticing.
 
 > **The DI entry point is `MigrationService`, not the migration class.**
 > Registering the namespace on `MigrationService::setSourceNamespaces()`, as
@@ -173,9 +177,10 @@ $released = $storage->releaseStaleClaims($threshold);
 Run the release from a cron or a supervisor hook, with a threshold comfortably
 longer than the slowest batch: releasing a claim a live worker still holds
 means the message is delivered twice, which the at-least-once contract permits
-but nobody enjoys. A row claimed by a worker that predates the `claimed_at`
-column has no timestamp and counts as stale — it can only have been left behind
-by a version that is no longer running.
+but nobody enjoys. A `Processing` row with no timestamp counts as stale, whether
+it was left by a version predating the column or written by `save()` — which
+always clears `claimed_by` along with `claimed_at`. Neither row is held by a
+live claim, which is exactly what the missing `claimed_by` says.
 
 A growing `Processing` count still deserves an alert; now it also has a cure.
 

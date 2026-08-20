@@ -36,8 +36,11 @@ composer require rasuvaeff/yii3-outbox-db
   `M260820000000AddOutboxClaimedAt` (adds `claimed_at` + processing index;
   `down()` is MySQL/PostgreSQL only, SQLite cannot drop a column).
 - `payload` is `TEXT`: unbounded on PostgreSQL/SQLite, 65,535 bytes on MySQL.
-  Not widened by a migration on purpose; `ALTER TABLE outbox MODIFY payload
-  MEDIUMTEXT NOT NULL` if your events need it.
+  Not widened by a migration on purpose; `ALTER TABLE <your table> MODIFY
+  payload MEDIUMTEXT NOT NULL` if your events need it (the table is
+  `table_prefix` + `table` from params, `outbox` by default). Over the limit:
+  MySQL strict mode fails the insert and takes the business transaction with it;
+  a permissive mode truncates silently and publishes the remains.
 - `DbOutboxStorage` takes an optional `Psr\Clock\ClockInterface` (used for
   `claimed_at`); without one it reads the system clock in UTC.
 - Datetimes stored as `Y-m-d H:i:s` UTC strings.
@@ -67,7 +70,8 @@ $purged  = $storage->deleteByStatus(OutboxStatus::Published);
 
 ## Migration
 
-Class: `Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable`
+Classes: `Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable`,
+then `Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt`
 (namespaced since 2.0). Register BY NAMESPACE:
 
 ```php
@@ -78,12 +82,18 @@ MigrationService::class => [
 
 Table name: params only (`table_prefix` + `table`) => `OutboxTableName` (VO) =>
 both the storage and the migration. Configuring the migration through the
-container does NOT work (Injector::make() resolves by type, not by class-id)
-and adding such a definition fatals the container on every request.
+container does NOT work (Injector::make() resolves by type, not by class-id):
+such a definition is inert, not fatal. `setSourceNamespaces()` above is the
+supported DI entry point.
 
 Columns: `id` (PK), `type`, `payload`, `status`, `created_at`, `attempts`,
-`last_attempt_at`, `aggregate_id`, `claimed_by`. Index `idx_<table>_pending`
-backs the pending poll.
+`last_attempt_at`, `aggregate_id`, `claimed_by`, `claimed_at`. Index
+`idx_<table>_pending` backs the pending poll; `idx_<table>_processing`
+(`status`, `claimed_at`) backs stale-claim recovery.
+
+`M260820000000AddOutboxClaimedAt` is mandatory: `claim()` writes `claimed_at`,
+so run `migrate:up` BEFORE deploying the new code. `down()` is MySQL/PostgreSQL
+only — `yiisoft/db-sqlite` cannot drop a column.
 
 ## DI / params
 

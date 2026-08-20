@@ -116,17 +116,31 @@ publishes core first.
   `claimed_by`.** Without the timestamp a claim abandoned by a killed worker is
   indistinguishable from a live one, and `findStaleClaims()`/
   `releaseStaleClaims()` have nothing to filter on. A NULL `claimed_at` on a
-  `Processing` row counts as stale — it can only come from a version that
-  predates the column.
+  `Processing` row counts as stale. It comes from a version predating the
+  column, or from `save()` being handed a `Processing` message — `save()` clears
+  both columns unconditionally. Neither row is held by a live claim, which is
+  what the NULL `claimed_by` beside it says, so releasing both is correct.
+- **`releaseStaleClaims()` repeats the staleness predicate in its `UPDATE`, and
+  Infection reports both guards as escaped mutants. Do not delete them.** The
+  method selects ids and then updates them: two statements, and under MySQL or
+  PostgreSQL a concurrent transaction commits in between. Without
+  `status = 'processing'` a row published in that window would be resurrected to
+  `Pending`; without the `claimed_at` predicate a row released and re-claimed in
+  that window would have its live claim reset, handing the message to a second
+  worker mid-delivery. Neither can be reproduced in the SQLite suite — SQLite
+  serialises the interleaving away — so the mutants survive honestly rather than
+  being killed by a test that proves nothing.
 - **`payload` stays `TEXT` on purpose.** Unbounded on PostgreSQL and SQLite,
   65,535 bytes on MySQL. Widening it to `MEDIUMTEXT` in a migration would force
   a table rebuild on every MySQL installation for a ceiling most never reach, so
   the limit is documented in both READMEs with a one-line `ALTER` instead. Do
   not "fix" this with a migration without a concrete report of someone hitting
   it.
-- SQLite integration tests run against a temp file, not `:memory:` — two
-  connections to `:memory:` are two different databases, and the
-  concurrent-claim test needs both workers on the same rows.
+- A SQLite integration test that needs **two connections** runs against a temp
+  file, not `:memory:` — two connections to `:memory:` are two different
+  databases, and the concurrent-claim test needs both workers on the same rows.
+  Single-connection suites (`MigrationTest`, `ConfigWiringTest`) stay on
+  `:memory:`: it is faster and has nothing to clean up.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types.
 

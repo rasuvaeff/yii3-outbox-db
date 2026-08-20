@@ -28,9 +28,18 @@ See [`UPGRADE.md`](UPGRADE.md) — it also explains what the first
 
 - `DbOutboxStorage` accepts an optional `Psr\Clock\ClockInterface`, used to
   stamp `claimed_at`. Without one it reads the system clock in UTC.
+- `releaseStaleClaims()` repeats the staleness predicate in its `UPDATE`, not
+  only in the `SELECT` that picks the ids. The two statements leave a window in
+  which a concurrent recovery can release a row and a worker can claim it again;
+  updating on the id list alone reset that live claim to `Pending` and handed
+  the message to a second worker mid-delivery.
+- Both migrations are `final readonly class`, as the package's own style rule
+  requires.
 - Document the MySQL `TEXT` ceiling on `payload` (65,535 bytes; unbounded on
-  PostgreSQL and SQLite), what happens when a payload exceeds it, and the
-  one-line `ALTER` for installations that need more. Deliberately not a
+  PostgreSQL and SQLite), what happens when a payload exceeds it — a failed
+  insert that rolls back the business transaction under strict mode, a silent
+  truncation that publishes a corrupted payload otherwise — and the one-line
+  `ALTER` for installations that need more. Deliberately not a
   migration: 64 KB is generous for a domain event, and widening the column
   would force a table rebuild on every MySQL installation for a case most never
   hit ([#20](https://github.com/rasuvaeff/yii3-outbox-db/issues/20)).
