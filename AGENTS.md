@@ -35,20 +35,14 @@ The core contracts (`Outbox`, `OutboxMessage`, `StorageInterface`, `RetryPolicy`
 
 ## Commands
 
-No PHP/Composer on the host — run in Docker via the `composer:2` image. Core
-`yii3-outbox` is consumed via a path repository while unpublished, so mount the
-**monorepo root**, not just this package dir:
+No PHP/Composer on the host — run in Docker via the `composer:2` image.
 
 ```bash
-# inject the path repo + install (creates the vendor symlink, drops the lock)
-docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-db composer:2 sh -c '
-  composer config repositories.core path ../yii3-outbox &&
-  composer update -q &&
-  composer config --unset repositories.core &&
-  rm -f composer.lock'
-
-# build (vendor symlink persists; composer.json stays publish-clean)
-docker run --rm -v "$REPO_ROOT":/repo -w /repo/yii3-outbox-db composer:2 composer build
+docker run --rm -v "$PWD":/app -w /app composer:2 composer build
+docker run --rm -v "$PWD":/app -w /app composer:2 composer cs:fix
+docker run --rm -v "$PWD":/app -w /app composer:2 composer psalm
+docker run --rm -v "$PWD":/app -w /app composer:2 composer test
+docker run --rm -v "$PWD":/app -w /app composer:2 composer release-check
 ```
 
 Or with Make:
@@ -62,11 +56,6 @@ make test-coverage
 make mutation
 make release-check
 ```
-
-`composer.json` keeps `rasuvaeff/yii3-outbox: ^1.0` (Packagist) with **no**
-committed `repositories` block, so it is publish-ready. Until core is on
-Packagist the GitHub CI of this package is red — expected; the joint release
-publishes core first.
 
 `composer.lock` is gitignored (library).
 `make test-coverage` and `make mutation` bootstrap `pcov` inside the
