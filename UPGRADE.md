@@ -1,6 +1,6 @@
 # Upgrade guide
 
-## To the release that adds stale-claim recovery
+## 2.0 → 2.1
 
 This release adds the `claimed_at` column and the API that uses it. `claim()`
 writes that column on every call, so the schema change is **mandatory** — not

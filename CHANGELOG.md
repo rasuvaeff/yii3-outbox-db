@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-08-20
 
 **Required migration.** `claim()` writes the new `claimed_at` column, so
 `M260820000000AddOutboxClaimedAt` must run **before** the new code is deployed.
