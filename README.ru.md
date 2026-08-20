@@ -135,6 +135,7 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 |---|---|
 | `save(OutboxMessage)` | upsert по `id` (первичная запись или пересохранение при retry) |
 | `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `created_at` ASC |
+| `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | тот же захват без строк, ещё ждущих окончания backoff. Именно это вызывает `Processor` |
 | `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
 | `markPublished(OutboxMessage)` | пересохранить со статусом `Published` |
 | `markFailed(OutboxMessage)` | пересохранить со статусом `Failed` |
@@ -142,6 +143,44 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `deleteByStatus(OutboxStatus)` | очистка (например, удалить всё со статусом `Published`) |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | строки, всё ещё `Processing`, чей claim старше порога |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | возвращает такие строки в `Pending`; отдаёт количество |
+
+#### Backoff больше не доходит до PHP
+
+`DbOutboxStorage` реализует `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`,
+поэтому `Processor` захватывает через `claimReady()`, и сообщение, у которого не
+истекла задержка повтора, из таблицы вообще не забирается. Раньше захватывались
+любые `Pending`-строки, а ядро тут же писало неготовые обратно — две записи на
+каждое отложенное сообщение за итерацию, и каждое занимало слот в `batchSize`,
+который мог достаться готовому.
+
+Дополнительное условие — одно:
+
+```sql
+AND (attempts >= :maxAttempts
+     OR last_attempt_at IS NULL
+     OR last_attempt_at <= :readyThreshold)
+```
+
+`attempts >= :maxAttempts` — не оптимизация. Сообщение с исчерпанными попытками
+можно только пометить `Failed`, а `Processor` способен пометить лишь то, что
+хранилище ему отдало: отфильтруйте его — и завершить его не сможет никто, оно
+навсегда останется `Pending`, невидимое для алерта на `Failed`.
+
+Ни миграции, ни нового индекса это не требует. `idx_<table>_pending`
+(`status`, `type`, `created_at`) по-прежнему сужает скан и обслуживает
+сортировку; добавленная дизъюнкция — это `OR` по двум колонкам, который целиком
+не покрывается ни одним индексом, и вычисляется он на строках, уже отобранных
+существующим индексом.
+
+Для эксплуатации меняются две вещи:
+
+- `ProcessingResult::$skipped` теперь `0` — сообщения, которые он считал, больше
+  не захватываются. Чтобы знать, сколько ждёт повтора, считайте `Pending`-строки
+  со свежим `last_attempt_at`.
+- Сообщение с исчерпанными попытками помечается `Failed` на величину до
+  `delaySeconds` позже: оно ждёт батча, в который попадёт.
+
+Требует `rasuvaeff/yii3-outbox` ^1.5.
 
 #### `claim()` против `findPending()`
 

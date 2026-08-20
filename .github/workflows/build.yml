@@ -111,6 +111,13 @@ jobs:
       - name: Build
         run: composer build
 
+      # composer build runs the Unit suite only. Everything that needs a real
+      # database — the atomic claim, the readiness predicate, stale-claim
+      # recovery, the two-connection concurrency guarantee — lives in the
+      # Integration suite, which is SQLite-backed and needs no service.
+      - name: Integration tests
+        run: composer test:integration
+
   prefer-lowest:
     name: Prefer lowest
     needs: changes

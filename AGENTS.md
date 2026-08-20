@@ -112,6 +112,30 @@ publishes core first.
 - Datetimes are stored as `Y-m-d H:i:s` strings normalized to UTC.
 - `OutboxRowMapper` rejects corrupt rows with `InvalidOutboxRowException` —
   never silently coerce bad data.
+- **`claimReady()` must keep taking exhausted messages.** The readiness
+  predicate exists to stop claiming rows that are still in backoff, but the
+  `attempts >= :maxAttempts` disjunct is not part of that optimisation and must
+  not be "simplified" away. A message out of attempts can only ever be marked
+  `Failed`, and `Processor` can only fail a message the claim returned — drop
+  the clause and those rows stay `Pending` forever, with no alert on `Failed`
+  ever firing. Pinned by `claimReadyTakesExhaustedMessagesInsideTheBackoffWindow`
+  in the Integration suite.
+- **`$readyThreshold` comes from the core.** It is
+  `RetryPolicy::readyThreshold($now)`; never rebuild it here from
+  `delaySeconds`. The core is the only place that knows the policy, and the
+  equivalence between the threshold filter and `isReadyForRetry()` is pinned by
+  a property test there, not here.
+- **`tests/Integration` is the only thing that covers the SQL.** `composer
+  build` runs the Unit suite alone — `src/DbOutboxStorage.php` has no unit test
+  at all. The atomic claim, the readiness predicate, stale-claim recovery and
+  the two-connection concurrency guarantee live there and nowhere else, so
+  adding a query without a test there means adding untested SQL, whatever
+  `composer build` says. It is also why Infection scores this package: it runs
+  every suite, and `SqliteIntegrationTest` carries
+  `#[Covers(DbOutboxStorage::class)]` — remove that attribute and every mutant
+  in the storage becomes uncovered. `build.yml` runs the suite explicitly
+  (`composer test:integration`) on each matrix PHP version, rather than leaving
+  it to the mutation job's initial test run.
 - **`claim()` stamps `claimed_at`, and `save()` clears it along with
   `claimed_by`.** Without the timestamp a claim abandoned by a killed worker is
   indistinguishable from a live one, and `findStaleClaims()`/

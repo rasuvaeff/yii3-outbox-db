@@ -7,12 +7,18 @@ namespace Rasuvaeff\Yii3OutboxDb;
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Query\Query;
 
 /**
  * SQL-backed {@see StorageInterface}.
+ *
+ * It implements {@see RetryAwareStorageInterface}, so `Processor` claims
+ * through {@see self::claimReady()} and a message still waiting out its backoff
+ * is never taken from the table — rather than claimed, discarded in PHP and
+ * written straight back.
  *
  * Beyond the interface it exposes two operational helpers that no storage
  * contract can express: {@see self::deleteByStatus()} for retention, and
@@ -21,7 +27,7 @@ use Yiisoft\Db\Query\Query;
  *
  * @api
  */
-final readonly class DbOutboxStorage implements StorageInterface
+final readonly class DbOutboxStorage implements RetryAwareStorageInterface
 {
     private OutboxRowMapper $mapper;
 
@@ -78,7 +84,40 @@ final readonly class DbOutboxStorage implements StorageInterface
     #[\Override]
     public function claim(array $types = [], int $limit = 1000): array
     {
-        return $this->db->transaction(function () use ($types, $limit): array {
+        return $this->claimWhere($types, $limit, null);
+    }
+
+    #[\Override]
+    public function claimReady(
+        \DateTimeImmutable $readyThreshold,
+        int $maxAttempts,
+        array $types = [],
+        int $limit = 1000,
+    ): array {
+        return $this->claimWhere($types, $limit, [
+            'or',
+            // Not an optimisation: an exhausted message can only ever be
+            // marked Failed, and the caller can only fail what this method
+            // returned. Leave it out and nothing terminates it — it stays
+            // Pending forever, invisible to an alert watching Failed.
+            ['>=', 'attempts', $maxAttempts],
+            ['last_attempt_at' => null],
+            ['<=', 'last_attempt_at', $this->mapper->formatDateTime($readyThreshold)],
+        ]);
+    }
+
+    /**
+     * The claim both public entry points run, with an optional extra predicate
+     * on which rows are eligible.
+     *
+     * @param list<string> $types
+     * @param array<array-key, mixed>|null $eligible
+     *
+     * @return list<OutboxMessage>
+     */
+    private function claimWhere(array $types, int $limit, ?array $eligible): array
+    {
+        return $this->db->transaction(function () use ($types, $limit, $eligible): array {
             $query = (new Query($this->db))
                 ->select('id')
                 ->from($this->table)
@@ -88,6 +127,10 @@ final readonly class DbOutboxStorage implements StorageInterface
 
             if ($types !== []) {
                 $query->andWhere(['type' => $types]);
+            }
+
+            if ($eligible !== null) {
+                $query->andWhere($eligible);
             }
 
             $ids = $query->column();

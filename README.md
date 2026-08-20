@@ -133,6 +133,7 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 |---|---|
 | `save(OutboxMessage)` | upsert by `id` (initial record or retry re-save) |
 | `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `created_at` ASC |
+| `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | same claim, minus the rows still waiting out their backoff. What `Processor` calls |
 | `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `created_at` ASC |
 | `markPublished(OutboxMessage)` | re-save with `Published` status |
 | `markFailed(OutboxMessage)` | re-save with `Failed` status |
@@ -140,6 +141,44 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `deleteByStatus(OutboxStatus)` | housekeeping (e.g. purge `Published`) |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | rows still `Processing` whose claim is older than the threshold |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | puts those rows back to `Pending`; returns how many |
+
+#### The backoff never reaches PHP
+
+`DbOutboxStorage` implements `Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`,
+so `Processor` claims through `claimReady()` and a message whose retry delay has
+not elapsed is never taken from the table. Before, every `Pending` row was
+claimed and the core wrote the not-yet-due ones straight back — two writes per
+backing-off message per iteration, each occupying a slot in `batchSize` that a
+ready message could have used.
+
+The extra condition is one clause:
+
+```sql
+AND (attempts >= :maxAttempts
+     OR last_attempt_at IS NULL
+     OR last_attempt_at <= :readyThreshold)
+```
+
+`attempts >= :maxAttempts` is not an optimisation. A message out of attempts can
+only ever be marked `Failed`, and `Processor` can only fail a message the
+storage handed it — filter it out and nothing terminates it: it stays `Pending`
+forever, invisible to an alert watching `Failed`.
+
+No migration and no new index come with this. `idx_<table>_pending`
+(`status`, `type`, `created_at`) still narrows the scan and serves the
+ordering; the added disjunction is an `OR` across two columns, which no index
+can satisfy as a whole, and it is evaluated on rows the existing index already
+selected.
+
+Two things change for an operator:
+
+- `ProcessingResult::$skipped` reads `0` — the messages it used to count are no
+  longer claimed. Count `Pending` rows whose `last_attempt_at` is recent if you
+  want to know how many are backing off.
+- A message that has spent its attempts is marked `Failed` up to
+  `delaySeconds` later than before, since it waits for a batch that includes it.
+
+Requires `rasuvaeff/yii3-outbox` ^1.5.
 
 #### `claim()` vs `findPending()`
 

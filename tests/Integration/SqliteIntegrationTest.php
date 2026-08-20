@@ -429,6 +429,113 @@ final class SqliteIntegrationTest
         $second->close();
     }
 
+    public function claimReadyTakesMessagesThatWereNeverAttempted(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->pending(id: 'fresh', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        $claimed = $storage->claimReady(new \DateTimeImmutable('2026-06-11 11:59:00'), 3);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['fresh']);
+        Assert::same($claimed[0]->getStatus(), OutboxStatus::Processing);
+    }
+
+    public function claimReadyLeavesMessagesStillWaitingOutTheirBackoff(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->attempted(
+            id: 'backing-off',
+            attempts: 1,
+            lastAttemptAt: '2026-06-11 11:59:30',
+        ));
+
+        Assert::same($storage->claimReady(new \DateTimeImmutable('2026-06-11 11:59:00'), 3), []);
+        Assert::same($storage->getById('backing-off')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($storage->getById('backing-off')?->getAttempts(), 1);
+    }
+
+    public function claimReadyTakesAMessageAttemptedExactlyAtTheThreshold(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->attempted(
+            id: 'boundary',
+            attempts: 1,
+            lastAttemptAt: '2026-06-11 11:59:00',
+        ));
+
+        $claimed = $storage->claimReady(new \DateTimeImmutable('2026-06-11 11:59:00'), 3);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['boundary']);
+    }
+
+    /**
+     * Nothing but `markFailed()` terminates an exhausted message, and the
+     * caller can only fail what the claim returned. Filtering it out on its
+     * backoff would leave it `Pending` forever.
+     */
+    public function claimReadyTakesExhaustedMessagesInsideTheBackoffWindow(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->attempted(
+            id: 'exhausted',
+            attempts: 3,
+            lastAttemptAt: '2026-06-11 11:59:59',
+        ));
+
+        $claimed = $storage->claimReady(new \DateTimeImmutable('2026-06-11 11:59:00'), 3);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['exhausted']);
+    }
+
+    public function claimReadyKeepsTypeFilterLimitAndOrdering(): void
+    {
+        $storage = $this->createStorage();
+
+        $storage->save($this->pending(id: 'later', type: 'ab.exposure', createdAt: '2026-06-11 12:02:00'));
+        $storage->save($this->pending(id: 'earlier', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00'));
+        $storage->save($this->pending(id: 'other-type', type: 'order.created', createdAt: '2026-06-11 12:00:00'));
+        $storage->save($this->attempted(
+            id: 'backing-off',
+            attempts: 1,
+            lastAttemptAt: '2026-06-11 11:59:30',
+            createdAt: '2026-06-11 12:03:00',
+        ));
+
+        $claimed = $storage->claimReady(
+            new \DateTimeImmutable('2026-06-11 11:59:00'),
+            3,
+            ['ab.exposure'],
+            1,
+        );
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['earlier']);
+        Assert::same(
+            array_map(static fn(OutboxMessage $m): string => $m->getId(), $storage->findPending()),
+            ['other-type', 'later', 'backing-off'],
+        );
+    }
+
+    public function claimReadyStampsClaimedByAndClaimedAt(): void
+    {
+        $storage = $this->createStorage(now: '2026-06-11 12:05:00');
+
+        $storage->save($this->pending(id: 'fresh', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        $storage->claimReady(new \DateTimeImmutable('2026-06-11 11:59:00'), 3);
+
+        $row = $this->db
+            ->createCommand(sql: 'SELECT claimed_by, claimed_at FROM outbox WHERE id = :id', params: ['id' => 'fresh'])
+            ->queryOne();
+
+        Assert::notNull($row);
+        Assert::notNull($row['claimed_by']);
+        Assert::same($row['claimed_at'], '2026-06-11 12:05:00');
+    }
+
     private function createStorage(?string $now = null): DbOutboxStorage
     {
         return new DbOutboxStorage(
@@ -445,6 +552,23 @@ final class SqliteIntegrationTest
             payload: '{}',
             status: OutboxStatus::Pending,
             createdAt: new \DateTimeImmutable($createdAt),
+        );
+    }
+
+    private function attempted(
+        string $id,
+        int $attempts,
+        string $lastAttemptAt,
+        string $createdAt = '2026-06-11 12:00:00',
+    ): OutboxMessage {
+        return new OutboxMessage(
+            id: $id,
+            type: 'ab.exposure',
+            payload: '{}',
+            status: OutboxStatus::Pending,
+            createdAt: new \DateTimeImmutable($createdAt),
+            attempts: $attempts,
+            lastAttemptAt: new \DateTimeImmutable($lastAttemptAt),
         );
     }
 
