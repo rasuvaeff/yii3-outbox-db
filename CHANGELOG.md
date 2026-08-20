@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `DbOutboxStorage` implements `RetryAwareStorageInterface` (new in
+  `rasuvaeff/yii3-outbox` 1.5.0), so `Processor` claims through `claimReady()`
+  and a message whose retry delay has not elapsed is never taken from the table
+  ([#22](https://github.com/rasuvaeff/yii3-outbox-db/issues/22)).
+
+  Every `Pending` row used to be claimed and the core wrote the not-yet-due ones
+  straight back — two writes per backing-off message per worker iteration, plus
+  the row locks, and each one occupied a slot in `batchSize` that a ready
+  message could have used, so delivery latency grew with the size of the retry
+  queue. The predicate is now one `AND` clause in the claim query.
+
+  No migration and no new index: `idx_<table>_pending` still narrows the scan
+  and serves the ordering, and the added disjunction is an `OR` across two
+  columns that no index satisfies as a whole.
+
+- `composer test:integration`, and a CI step that runs it on every PHP version
+  in the matrix. The Integration suite did already execute in CI, but only
+  incidentally: `composer mutation` runs every suite, so a broken query surfaced
+  as Infection failing to complete its initial test run, in the one job that
+  also needs `pcov`, on one PHP version. `composer build` never touched it, so
+  a version-specific SQL failure on 8.3 or 8.5 had nothing to catch it.
+
+### Changed
+
+- Requires `rasuvaeff/yii3-outbox` ^1.5 (was ^1.0): `RetryAwareStorageInterface`
+  does not exist below it.
+- `ProcessingResult::$skipped` reads `0` against this storage — the messages it
+  counted are no longer claimed. Count `Pending` rows with a recent
+  `last_attempt_at` to see how many are backing off.
+- A message that has spent its attempts is marked `Failed` up to `delaySeconds`
+  later than before, since it now waits for a batch that includes it.
+
 ## 2.1.0 — 2026-08-20
 
 **Required migration.** `claim()` writes the new `claimed_at` column, so

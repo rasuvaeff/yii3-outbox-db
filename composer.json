@@ -25,7 +25,7 @@
     "require": {
         "php": "8.3 - 8.5",
         "psr/clock": "^1.0",
-        "rasuvaeff/yii3-outbox": "^1.0",
+        "rasuvaeff/yii3-outbox": "^1.5",
         "yiisoft/db": "^2.0",
         "yiisoft/db-migration": "^2.1"
     },
@@ -102,6 +102,7 @@
         "require-checker": "composer-require-checker check composer.json",
         "test": "testo --suite=Unit",
         "test:coverage": "testo --suite=Unit --coverage --coverage-clover=build/coverage.xml",
-        "test:coverage:ci": "testo --suite=Unit --coverage-clover=build/coverage.xml"
+        "test:coverage:ci": "testo --suite=Unit --coverage-clover=build/coverage.xml",
+        "test:integration": "testo --suite=Integration"
     }
 }

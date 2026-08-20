@@ -10,7 +10,8 @@ composer require rasuvaeff/yii3-outbox-db
 
 ## Rules
 
-- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\StorageInterface`.
+- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`
+  (which extends `StorageInterface`). Requires `rasuvaeff/yii3-outbox` ^1.5.
 - `save()` upserts by `OutboxMessage::getId()` — the durable identity and the
   at-least-once dedup anchor; never regenerate it.
 - `claim(array $types = [], int $limit = 1000)`: **what workers must use.**
@@ -18,6 +19,15 @@ composer require rasuvaeff/yii3-outbox-db
   random `claimed_by` token and returns exactly those rows, `created_at` ASC.
   Concurrent workers never get the same message. Every claimed message must end
   in `markPublished()`, `markFailed()` or `save($msg->withStatus(Pending))`.
+- `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)`:
+  what `Processor` actually calls. Same claim plus
+  `AND (attempts >= :maxAttempts OR last_attempt_at IS NULL OR last_attempt_at <= :readyThreshold)`,
+  so a message still in backoff is never taken and never written back.
+  The `attempts >= :maxAttempts` disjunct is mandatory: an exhausted message
+  can only be marked `Failed`, and only if the claim returned it. No migration
+  and no new index — `idx_<table>_pending` still narrows the scan; an `OR`
+  across two columns is not indexable as a whole. `ProcessingResult::$skipped`
+  therefore reads 0, and an exhausted message is failed up to `delaySeconds` later.
 - `findPending(array $types = [], int $limit = 1000)`: read-only listing of
   `Pending` rows, optional type filter (empty = all), `created_at` ASC. No
   atomicity — two workers get the same rows. Dashboards only, never a worker.
@@ -61,6 +71,7 @@ $outbox = new Outbox(storage: $storage, clock: $clock);
 $outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
 
 $claimed = $storage->claim(types: ['ab.exposure'], limit: 1000);  // workers
+$ready   = $storage->claimReady($policy->readyThreshold($now), 3, ['ab.exposure']); // what Processor uses
 $pending = $storage->findPending(types: ['ab.exposure'], limit: 1000); // read-only
 $storage->markPublished($message);
 $storage->markFailed($message);

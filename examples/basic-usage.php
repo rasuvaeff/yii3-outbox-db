@@ -6,6 +6,9 @@ require __DIR__ . '/../vendor/autoload.php';
 
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\Outbox;
+use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt;
@@ -69,5 +72,36 @@ $threshold = $clock->now()->modify('+15 minutes');
 echo '   stuck in Processing: ' . count($storage->findStaleClaims($threshold)) . "\n";
 echo '   released: ' . $storage->releaseStaleClaims($threshold) . "\n";
 echo '   pending order.created again: ' . count($storage->findPending(types: ['order.created'])) . "\n";
+
+echo "6. A message waiting out its backoff is not claimed at all:\n";
+$policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
+$storage->save(new OutboxMessage(
+    id: 'retrying',
+    type: 'order.created',
+    payload: '{"orderId":789}',
+    status: OutboxStatus::Pending,
+    createdAt: $clock->now(),
+    attempts: 1,
+    lastAttemptAt: $clock->now()->modify('-30 seconds'),
+));
+
+$ids = static fn (array $messages): string => implode(
+    ', ',
+    array_map(static fn (OutboxMessage $m): string => $m->getId(), $messages),
+);
+
+echo '   pending: ' . $ids($storage->findPending(types: ['order.created'])) . "\n";
+echo '   ready threshold: ' . $policy->readyThreshold($clock->now())->format('Y-m-d H:i:s')
+    . " (last attempt was 11:59:30)\n";
+
+$claimed = $storage->claimReady(
+    $policy->readyThreshold($clock->now()),
+    $policy->getMaxAttempts(),
+    ['order.created'],
+);
+
+echo '   claimReady took: ' . $ids($claimed) . "\n";
+echo '   still pending: ' . $ids($storage->findPending(types: ['order.created'])) . "\n";
+echo "   'retrying' was never claimed, so it was never written back\n\n";
 
 $db->close();
