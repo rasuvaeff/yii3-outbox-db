@@ -27,7 +27,7 @@
     //  - DbOutboxStorage::claim (:76, :77, :87, :90 x2, :100) are pre-existing,
     //    unrelated to this exception's attribution gap — untouched by this
     //    change (identical before/after), out of scope here.
-    "minMsi": 90,
+    "minMsi": 93,
     "mutators": {
         "@default": true
     }
