@@ -17,7 +17,7 @@ or export them asynchronously — surviving process restarts and downstream outa
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.0
+- `rasuvaeff/yii3-outbox` ^1.6
 - `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.0
 
 ## Installation
@@ -135,10 +135,11 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | same claim, minus the rows still waiting out their backoff. What `Processor` calls |
 | `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `created_at` ASC |
-| `markPublished(OutboxMessage)` | re-save with `Published` status |
+| `markPublished(OutboxMessage)` | re-save with `Published` status — or delete the row, with `deletePublished: true` |
+| `markPublishedBatch(list<OutboxMessage>)` | the same for a whole batch in one statement (`BatchAcknowledgingStorageInterface`); what `yii3-outbox-clickhouse` calls |
 | `markFailed(OutboxMessage)` | re-save with `Failed` status |
 | `getById(string $id)` | single message or `null` |
-| `deleteByStatus(OutboxStatus)` | housekeeping (e.g. purge `Published`) |
+| `deleteByStatus(OutboxStatus)` | housekeeping (e.g. purge `Published`); unnecessary with `deletePublished: true` |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | rows still `Processing` whose claim is older than the threshold |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | puts those rows back to `Pending`; returns how many |
 
@@ -228,6 +229,46 @@ specialized exporter — share one outbox. Because `claim()` hands each message
 to exactly one caller, their type sets must not overlap: a message matching
 both is delivered only to whichever worker claimed it first.
 
+#### Acknowledging a batch, and whether to keep what was sent
+
+`markPublished()` is one upsert per message. A consumer that delivers a batch
+as a unit — `yii3-outbox-clickhouse` writes one bulk insert per group — used to
+acknowledge a thousand-message group with a thousand statements in the OLTP
+database. `DbOutboxStorage` implements `BatchAcknowledgingStorageInterface`
+from the core, and such a consumer acknowledges the whole group through
+`markPublishedBatch()`: one `UPDATE … WHERE id IN (…)` per distinct attempt
+stamp, which for a group acknowledged together is one statement. Each row ends
+up exactly as `markPublished()` would have left it.
+
+What happens to an acknowledged row is a constructor flag:
+
+```php
+new DbOutboxStorage(db: $connection, deletePublished: true);
+// or, through the config-plugin:
+'rasuvaeff/yii3-outbox-db' => ['delete_published' => true],
+```
+
+| `deletePublished` | Acknowledged row | Housekeeping |
+|---|---|---|
+| `false` (default) | stays, as `Published` | `deleteByStatus(OutboxStatus::Published)` from a cron |
+| `true` | deleted | none: the table holds only `Pending`/`Processing`/`Failed` rows, and the pending index stays small |
+
+The flag governs `markPublished()` too, so `Processor` and a batching exporter
+sharing one table agree on what it holds. The price of `true` is the audit
+trail of what was sent — observe it at the sink instead (the ClickHouse event
+id is the outbox id). At-least-once is unchanged either way: a crash between
+the sink write and the acknowledgement leaves the row `Processing`, the
+stale-claim release returns it to `Pending`, and it is delivered again and
+deduplicated downstream.
+
+The acknowledgement carries no `status = 'processing'` guard on purpose. It
+runs after a successful delivery and a row is immutable apart from its status,
+so acknowledging it is right whatever state it is in: a row the stale-claim
+cron released and a second worker re-claimed is acknowledged by the first
+worker's batch all the same, and the second worker's own acknowledgement then
+finds nothing to do. A guard would only leave the released row in place — a
+guaranteed second delivery.
+
 ### Yii3 DI
 
 The config-plugin binds `StorageInterface` to `DbOutboxStorage` from
@@ -237,7 +278,10 @@ params:
 
 ```php
 // config/params.php
-'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox'],
+'rasuvaeff/yii3-outbox-db' => [
+    'table' => 'outbox',
+    'delete_published' => false,   // true: acknowledged rows are deleted, no purge cron needed
+],
 ```
 
 ## Security
@@ -246,7 +290,8 @@ params:
 - `OutboxRowMapper` validates every column and rejects corrupt rows with
   `InvalidOutboxRowException` — no silent coercion.
 - Payloads may contain PII; retention/purging is the application's responsibility
-  (`deleteByStatus` helps).
+  (`deleteByStatus` helps, `deletePublished: true` removes a row the moment it
+  is acknowledged).
 
 ## Examples
 

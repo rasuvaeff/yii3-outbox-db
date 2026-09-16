@@ -10,7 +10,7 @@ composer require rasuvaeff/yii3-outbox-db
 
 ## Rules
 
-- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface`
+- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface, Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface` (core ^1.6)
   (which extends `StorageInterface`). Requires `rasuvaeff/yii3-outbox` ^1.5.
 - `save()` upserts by `OutboxMessage::getId()` — the durable identity and the
   at-least-once dedup anchor; never regenerate it.
@@ -35,6 +35,15 @@ composer require rasuvaeff/yii3-outbox-db
   overlap, since `claim()` gives a message to exactly one caller.
 - `markPublished`/`markFailed` re-save with the new status, preserving the
   attempt count / `last_attempt_at` of the passed message.
+- `markPublishedBatch(list<OutboxMessage>)`: one `UPDATE … WHERE id IN (…)` per
+  distinct (attempts, last_attempt_at) pair — one statement for a group
+  acknowledged together. Empty list is a no-op. No `status = 'processing'`
+  guard: acknowledging runs after a successful delivery and is right in any
+  state; a guard would only re-deliver a row the stale-claim cron released.
+- Constructor flag `deletePublished: false` (params `delete_published`). `true`:
+  `markPublished()`/`markPublishedBatch()` DELETE the rows instead of keeping
+  them `Published` — no `deleteByStatus(Published)` purge needed, no audit
+  trail in the table. Applies to both methods so every acknowledger agrees.
 - `claim()` also stamps `claimed_at`; `save()` clears `claimed_by`/`claimed_at`.
 - `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` /
   `releaseStaleClaims(...)`: rows still `Processing` whose claim is older than
@@ -65,7 +74,7 @@ use Rasuvaeff\Yii3Outbox\Outbox;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 
-$storage = new DbOutboxStorage(db: $connection, table: 'outbox');
+$storage = new DbOutboxStorage(db: $connection, table: 'outbox', deletePublished: false);
 
 $outbox = new Outbox(storage: $storage, clock: $clock);
 $outbox->record(type: 'ab.exposure', payload: '{"experiment":"checkout"}');
@@ -74,6 +83,7 @@ $claimed = $storage->claim(types: ['ab.exposure'], limit: 1000);  // workers
 $ready   = $storage->claimReady($policy->readyThreshold($now), 3, ['ab.exposure']); // what Processor uses
 $pending = $storage->findPending(types: ['ab.exposure'], limit: 1000); // read-only
 $storage->markPublished($message);
+$storage->markPublishedBatch($claimed);   // one statement; DELETE with deletePublished: true
 $storage->markFailed($message);
 $message = $storage->getById($id);          // ?OutboxMessage
 $purged  = $storage->deleteByStatus(OutboxStatus::Published);
@@ -110,7 +120,7 @@ only — `yiisoft/db-sqlite` cannot drop a column.
 
 ```php
 // config/params.php
-'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox'],
+'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox', 'delete_published' => false],
 ```
 
 Binds `StorageInterface => DbOutboxStorage` from `config/di.php`.

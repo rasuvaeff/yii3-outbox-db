@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
+use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
@@ -22,7 +24,9 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
  * `StorageInterface` key and nothing the core package already binds —
  * yiisoft/config rejects duplicate keys across vendor packages. The core
  * `yii3-outbox` ships no `config/di.php`, so the application or this backend is
- * the single source of `StorageInterface`.
+ * the single source of `StorageInterface`. Whether the family merges cleanly is
+ * `bin/config-merge-harness @outbox` in the monorepo — no test here can see
+ * the sibling packages.
  */
 #[Test]
 #[CoversNothing]
@@ -63,11 +67,28 @@ final class ConfigWiringTest
         Assert::instanceOf($this->resolveStorage([]), DbOutboxStorage::class);
     }
 
-    public function coreAndBackendDoNotShareDiKeys(): void
+    public function storageFactoryKeepsPublishedRowsByDefault(): void
     {
-        $overlap = array_intersect_key($this->loadCore(), $this->loadDb([]));
+        $storage = $this->resolveStorage([]);
+        $message = $this->message();
+        $storage->save($message);
 
-        Assert::same($overlap, [], 'core and -db must not define the same di key (yiisoft/config Duplicate key)');
+        $storage->markPublished($message);
+
+        Assert::same($storage->getById($message->getId())?->getStatus(), OutboxStatus::Published);
+    }
+
+    public function storageFactoryHonoursDeletePublished(): void
+    {
+        $storage = $this->resolveStorage([
+            'rasuvaeff/yii3-outbox-db' => ['delete_published' => true],
+        ]);
+        $message = $this->message();
+        $storage->save($message);
+
+        $storage->markPublished($message);
+
+        Assert::null($storage->getById($message->getId()));
     }
 
     /**
@@ -98,26 +119,36 @@ final class ConfigWiringTest
         return require dirname(__DIR__, 2) . '/config/di.php';
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    private function loadCore(): array
+    private function message(): OutboxMessage
     {
-        $file = dirname(__DIR__, 2) . '/vendor/rasuvaeff/yii3-outbox/config/di.php';
-
-        if (!is_file($file)) {
-            return [];
-        }
-
-        $params = [];
-
-        return require $file;
+        return new OutboxMessage(
+            id: 'm1',
+            type: 'ab.exposure',
+            payload: '{}',
+            status: OutboxStatus::Pending,
+            createdAt: new \DateTimeImmutable('2026-06-11 12:00:00'),
+        );
     }
 
     private function sqlite(): ConnectionInterface
     {
         $driver = new SqliteDriver(dsn: 'sqlite::memory:');
+        $db = new SqliteConnection(driver: $driver, schemaCache: new SchemaCache(psrCache: new MemorySimpleCache()));
+        $db->createCommand(sql: '
+            CREATE TABLE outbox (
+                id              VARCHAR(255) PRIMARY KEY,
+                type            VARCHAR(255) NOT NULL,
+                payload         TEXT         NOT NULL,
+                status          VARCHAR(16)  NOT NULL,
+                created_at      VARCHAR(30)  NOT NULL,
+                attempts        INTEGER      NOT NULL DEFAULT 0,
+                last_attempt_at VARCHAR(30),
+                aggregate_id    VARCHAR(255),
+                claimed_by      VARCHAR(64),
+                claimed_at      VARCHAR(30)
+            )
+        ')->execute();
 
-        return new SqliteConnection(driver: $driver, schemaCache: new SchemaCache(psrCache: new MemorySimpleCache()));
+        return $db;
     }
 }

@@ -19,7 +19,7 @@
 ## Требования
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.0
+- `rasuvaeff/yii3-outbox` ^1.6
 - `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.0
 
 ## Установка
@@ -137,10 +137,11 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | тот же захват без строк, ещё ждущих окончания backoff. Именно это вызывает `Processor` |
 | `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
-| `markPublished(OutboxMessage)` | пересохранить со статусом `Published` |
+| `markPublished(OutboxMessage)` | пересохранить со статусом `Published` — или удалить строку при `deletePublished: true` |
+| `markPublishedBatch(list<OutboxMessage>)` | то же для целого батча одним statement'ом (`BatchAcknowledgingStorageInterface`); это вызывает `yii3-outbox-clickhouse` |
 | `markFailed(OutboxMessage)` | пересохранить со статусом `Failed` |
 | `getById(string $id)` | одно сообщение или `null` |
-| `deleteByStatus(OutboxStatus)` | очистка (например, удалить всё со статусом `Published`) |
+| `deleteByStatus(OutboxStatus)` | очистка (например, удалить всё со статусом `Published`); не нужна при `deletePublished: true` |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | строки, всё ещё `Processing`, чей claim старше порога |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | возвращает такие строки в `Pending`; отдаёт количество |
 
@@ -232,6 +233,46 @@ $released = $storage->releaseStaleClaims($threshold);
 типов не должны пересекаться: сообщение, подходящее обоим, дойдёт только до
 того воркера, который захватил его первым.
 
+#### Подтверждение батча и судьба отправленного
+
+`markPublished()` — один upsert на сообщение. Потребитель, доставляющий батч
+целиком — `yii3-outbox-clickhouse` пишет один bulk insert на группу, — раньше
+подтверждал группу из тысячи сообщений тысячей statements в OLTP-базе.
+`DbOutboxStorage` реализует `BatchAcknowledgingStorageInterface` из ядра, и
+такой потребитель подтверждает всю группу через `markPublishedBatch()`: один
+`UPDATE … WHERE id IN (…)` на каждый различный штамп попытки, то есть для
+группы, подтверждаемой вместе, — один statement. Каждая строка оказывается
+ровно в том виде, в каком её оставил бы `markPublished()`.
+
+Что происходит с подтверждённой строкой — флаг конструктора:
+
+```php
+new DbOutboxStorage(db: $connection, deletePublished: true);
+// или через config-plugin:
+'rasuvaeff/yii3-outbox-db' => ['delete_published' => true],
+```
+
+| `deletePublished` | Подтверждённая строка | Очистка |
+|---|---|---|
+| `false` (по умолчанию) | остаётся как `Published` | `deleteByStatus(OutboxStatus::Published)` из cron |
+| `true` | удаляется | не нужна: в таблице только `Pending`/`Processing`/`Failed`, pending-индекс остаётся маленьким |
+
+Флаг действует и на `markPublished()`, поэтому `Processor` и батчевый
+экспортёр, делящие одну таблицу, сходятся в том, что в ней лежит. Цена `true` —
+аудит отправленного: наблюдайте его на стороне sink (id события в ClickHouse —
+это id outbox-строки). At-least-once не меняется в обоих режимах: падение между
+записью в sink и подтверждением оставляет строку в `Processing`, освобождение
+зависших claim'ов возвращает её в `Pending`, она доставляется повторно и
+дедуплицируется ниже по потоку.
+
+Guard `status = 'processing'` в подтверждении намеренно отсутствует. Оно
+выполняется после успешной доставки, а строка неизменяема кроме статуса,
+поэтому подтвердить её правильно в любом состоянии: строку, которую cron
+освободил и второй воркер заново захватил, батч первого воркера подтверждает
+всё равно, а подтверждению второго воркера остаётся ничего не делать. Guard
+лишь оставил бы освобождённую строку на месте — гарантированная вторая
+доставка.
+
 ### Yii3 DI
 
 config-plugin биндит `StorageInterface` на `DbOutboxStorage` из `config/di.php`.
@@ -240,7 +281,10 @@ config-plugin биндит `StorageInterface` на `DbOutboxStorage` из `confi
 
 ```php
 // config/params.php
-'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox'],
+'rasuvaeff/yii3-outbox-db' => [
+    'table' => 'outbox',
+    'delete_published' => false,   // true: подтверждённые строки удаляются, cron-очистка не нужна
+],
 ```
 
 ## Безопасность
@@ -249,7 +293,8 @@ config-plugin биндит `StorageInterface` на `DbOutboxStorage` из `confi
 - `OutboxRowMapper` валидирует каждую колонку и отбрасывает повреждённые строки
   через `InvalidOutboxRowException` — без молчаливого приведения типов.
 - Payload может содержать PII; хранение и очистка — ответственность приложения
-  (поможет `deleteByStatus`).
+  (поможет `deleteByStatus`; `deletePublished: true` удаляет строку в момент
+  подтверждения).
 
 ## Примеры
 

@@ -10,5 +10,8 @@ return [
         // prepended to `table`; set it once to keep every rasuvaeff table out
         // of the way of your application's own
         'table_prefix' => '',
+        // delete an acknowledged row instead of keeping it as Published: no
+        // deleteByStatus(Published) purge needed, no audit trail of what was sent
+        'delete_published' => false,
     ],
 ];
