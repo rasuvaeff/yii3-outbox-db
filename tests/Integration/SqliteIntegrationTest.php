@@ -8,8 +8,10 @@ use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Exception\InvalidOutboxRowException;
+use Rasuvaeff\Yii3OutboxDb\Tests\Support\CountingProfiler;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\AfterTest;
 use Testo\Lifecycle\BeforeTest;
@@ -162,6 +164,152 @@ final class SqliteIntegrationTest
         $loaded = $storage->getById('m1');
         Assert::notNull($loaded);
         Assert::same($loaded->getStatus(), OutboxStatus::Failed);
+    }
+
+    public function markPublishedDeletesTheRowWhenConfigured(): void
+    {
+        $storage = $this->createStorage(deletePublished: true);
+        $message = $this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+        $storage->save($message);
+        $storage->save($this->pending(id: 'm2', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00'));
+
+        $storage->markPublished($message->withAttempt(new \DateTimeImmutable('2026-06-11 12:05:00')));
+
+        Assert::null($storage->getById('m1'));
+        Assert::same($storage->getById('m2')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    public function markPublishedBatchPublishesEveryRowInOneStatement(): void
+    {
+        $storage = $this->createStorage(now: '2026-06-11 12:05:00');
+
+        foreach (['a', 'b', 'c'] as $index => $id) {
+            $storage->save($this->pending(id: $id, type: 'ab.exposure', createdAt: '2026-06-11 12:0' . $index . ':00'));
+        }
+
+        $claimed = $storage->claim();
+        $attemptedAt = new \DateTimeImmutable('2026-06-11 12:05:00');
+        $batch = array_map(static fn(OutboxMessage $m): OutboxMessage => $m->withAttempt($attemptedAt), \array_slice($claimed, 0, 2));
+
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+        $storage->markPublishedBatch($batch);
+        $this->db->setProfiler(null);
+
+        Assert::same($profiler->statements, 1);
+
+        foreach (['a', 'b'] as $id) {
+            $loaded = $storage->getById($id);
+            Assert::notNull($loaded);
+            Assert::same($loaded->getStatus(), OutboxStatus::Published);
+            Assert::same($loaded->getAttempts(), 1);
+            Assert::same($loaded->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 12:05:00');
+        }
+
+        Assert::same($storage->getById('c')?->getStatus(), OutboxStatus::Processing);
+        $rows = iterator_to_array($this->allRows());
+        Assert::null($rows[0]['claimed_by']);
+        Assert::null($rows[0]['claimed_at']);
+        Assert::notNull($rows[2]['claimed_by']);
+    }
+
+    public function markPublishedBatchKeepsEachMessagesOwnAttemptStamp(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->attempted(id: 'once', attempts: 1, lastAttemptAt: '2026-06-11 11:00:00'));
+        $storage->save($this->attempted(id: 'twice', attempts: 2, lastAttemptAt: '2026-06-11 11:30:00'));
+        $storage->save($this->pending(id: 'fresh', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        $claimed = $storage->claim();
+
+        $storage->markPublishedBatch($claimed);
+
+        Assert::same($storage->getById('once')?->getAttempts(), 1);
+        Assert::same($storage->getById('once')?->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 11:00:00');
+        Assert::same($storage->getById('twice')?->getAttempts(), 2);
+        Assert::same($storage->getById('twice')?->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 11:30:00');
+        Assert::same($storage->getById('fresh')?->getAttempts(), 0);
+        Assert::null($storage->getById('fresh')?->getLastAttemptAt());
+
+        foreach (['once', 'twice', 'fresh'] as $id) {
+            Assert::same($storage->getById($id)?->getStatus(), OutboxStatus::Published);
+        }
+    }
+
+    public function markPublishedBatchDeletesEveryRowInOneStatementWhenConfigured(): void
+    {
+        $storage = $this->createStorage(deletePublished: true);
+
+        foreach (['a', 'b', 'c'] as $index => $id) {
+            $storage->save($this->pending(id: $id, type: 'ab.exposure', createdAt: '2026-06-11 12:0' . $index . ':00'));
+        }
+
+        $claimed = $storage->claim();
+
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+        $storage->markPublishedBatch(\array_slice($claimed, 0, 2));
+        $this->db->setProfiler(null);
+
+        Assert::same($profiler->statements, 1);
+        Assert::null($storage->getById('a'));
+        Assert::null($storage->getById('b'));
+        Assert::same($storage->getById('c')?->getStatus(), OutboxStatus::Processing);
+        Assert::count(iterator_to_array($this->allRows()), 1);
+    }
+
+    #[DataProvider('deletePublishedProvider')]
+    public function markPublishedBatchWithEmptyListTouchesNothing(bool $deletePublished): void
+    {
+        $storage = $this->createStorage(deletePublished: $deletePublished);
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        $storage->claim();
+
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+        $storage->markPublishedBatch([]);
+        $this->db->setProfiler(null);
+
+        Assert::same($profiler->statements, 0);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Processing);
+    }
+
+    /**
+     * The acknowledgement carries no `status = 'processing'` guard: a row the
+     * stale-claim cron released and a second worker re-claimed is acknowledged
+     * by the first worker's batch all the same. The message was delivered, so
+     * removing it is right; the second worker's own acknowledgement then finds
+     * nothing to do, and nothing is lost.
+     */
+    #[DataProvider('deletePublishedProvider')]
+    public function markPublishedBatchAcknowledgesARowReleasedAndReclaimedMeanwhile(bool $deletePublished): void
+    {
+        $first = $this->createStorage(now: '2026-08-20 10:00:00', deletePublished: $deletePublished);
+        $second = $this->createStorage(now: '2026-08-20 10:20:00', deletePublished: $deletePublished);
+        $first->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+
+        $batch = $first->claim();
+        Assert::same($first->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00')), 1);
+        $reclaimed = $second->claim();
+        Assert::count($reclaimed, 1);
+
+        $first->markPublishedBatch($batch);
+
+        Assert::same($first->findPending(), []);
+        Assert::same($first->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:30:00')), []);
+        $afterFirst = $first->getById('a');
+        Assert::same($afterFirst?->getStatus(), $deletePublished ? null : OutboxStatus::Published);
+
+        $second->markPublishedBatch($reclaimed);
+
+        $afterSecond = $first->getById('a');
+        Assert::same($afterSecond?->getStatus(), $deletePublished ? null : OutboxStatus::Published);
+        Assert::same($first->findPending(), []);
+    }
+
+    public static function deletePublishedProvider(): iterable
+    {
+        yield 'keep as Published' => [false];
+        yield 'delete' => [true];
     }
 
     public function saveUpsertsExistingId(): void
@@ -536,11 +684,12 @@ final class SqliteIntegrationTest
         Assert::same($row['claimed_at'], '2026-06-11 12:05:00');
     }
 
-    private function createStorage(?string $now = null): DbOutboxStorage
+    private function createStorage(?string $now = null, bool $deletePublished = false): DbOutboxStorage
     {
         return new DbOutboxStorage(
             db: $this->db,
             clock: $now === null ? null : new StaticClock(new \DateTimeImmutable($now)),
+            deletePublished: $deletePublished,
         );
     }
 

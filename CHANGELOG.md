@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.3.0 — 2026-09-16
+
+### Added
+
+- `DbOutboxStorage` implements `BatchAcknowledgingStorageInterface` (new in
+  `rasuvaeff/yii3-outbox` 1.6.0): `markPublishedBatch()` acknowledges a whole
+  batch with one `UPDATE … WHERE id IN (…)` per distinct attempt stamp instead
+  of one upsert per message
+  ([#26](https://github.com/rasuvaeff/yii3-outbox-db/issues/26)).
+- Constructor flag `deletePublished` (params key `delete_published`, default
+  `false`): with `true`, `markPublished()` and `markPublishedBatch()` delete
+  the acknowledged rows instead of keeping them as `Published`, so no
+  `deleteByStatus(Published)` purge is needed and the table holds only
+  `Pending`/`Processing`/`Failed` rows.
+
+### Changed
+
+- Requires `rasuvaeff/yii3-outbox` `^1.6`.
+- `ConfigWiringTest` no longer imitates the cross-package merge with
+  `array_intersect_key()`; that check is `bin/config-merge-harness @outbox`
+  in the monorepo.
+
 ## 2.2.0 — 2026-08-20
 
 ### Added

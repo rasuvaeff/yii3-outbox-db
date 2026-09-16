@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3OutboxDb;
 
 use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
@@ -20,6 +21,13 @@ use Yiisoft\Db\Query\Query;
  * is never taken from the table — rather than claimed, discarded in PHP and
  * written straight back.
  *
+ * It also implements {@see BatchAcknowledgingStorageInterface}: a consumer that
+ * delivers a batch as a unit acknowledges it through
+ * {@see self::markPublishedBatch()} with one statement instead of one upsert
+ * per message. Whether an acknowledged row stays as `Published` or is deleted
+ * is `$deletePublished`, and it governs {@see self::markPublished()} too — every
+ * producer of acknowledgements then agrees on what the table holds.
+ *
  * Beyond the interface it exposes two operational helpers that no storage
  * contract can express: {@see self::deleteByStatus()} for retention, and
  * {@see self::findStaleClaims()} / {@see self::releaseStaleClaims()} for the
@@ -27,7 +35,7 @@ use Yiisoft\Db\Query\Query;
  *
  * @api
  */
-final readonly class DbOutboxStorage implements RetryAwareStorageInterface
+final readonly class DbOutboxStorage implements RetryAwareStorageInterface, BatchAcknowledgingStorageInterface
 {
     private OutboxRowMapper $mapper;
 
@@ -35,6 +43,11 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface
 
     /**
      * @param non-empty-string $table
+     * @param bool $deletePublished delete an acknowledged row instead of keeping
+     *                              it as `Published`: the table then holds only
+     *                              `Pending`/`Processing`/`Failed` rows and needs
+     *                              no `deleteByStatus(Published)` purge, at the
+     *                              price of the audit trail of what was sent
      *
      * @throws \InvalidArgumentException when the name is not a valid identifier
      */
@@ -42,6 +55,7 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface
         private ConnectionInterface $db,
         string $table = 'outbox',
         private ?ClockInterface $clock = null,
+        private bool $deletePublished = false,
     ) {
         // validation lives in the value object, so the storage and the bundled
         // migration cannot disagree about what a valid table name is
@@ -171,7 +185,63 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface
     #[\Override]
     public function markPublished(OutboxMessage $message): void
     {
+        if ($this->deletePublished) {
+            $this->deleteByIds([$message->getId()]);
+
+            return;
+        }
+
         $this->save(message: $message->withStatus(OutboxStatus::Published));
+    }
+
+    /**
+     * No `status = 'processing'` guard on purpose. The acknowledgement comes
+     * after a successful delivery and a row is immutable apart from its status,
+     * so acknowledging it is right whatever state it is in — a guard would only
+     * leave a row that `releaseStaleClaims()` put back to `Pending` in place,
+     * and that is a guaranteed second delivery.
+     */
+    #[\Override]
+    public function markPublishedBatch(array $messages): void
+    {
+        if ($messages === []) {
+            return;
+        }
+
+        if ($this->deletePublished) {
+            $this->deleteByIds(array_map(static fn(OutboxMessage $message): string => $message->getId(), $messages));
+
+            return;
+        }
+
+        // One UPDATE per distinct (attempts, last_attempt_at) pair, so each row
+        // ends up exactly as markPublished() would have left it. A batch
+        // acknowledged by one consumer shares the attempt stamp, so in practice
+        // that is one statement.
+        /** @var array<string, array{attempts: int, last_attempt_at: string|null, ids: list<string>}> $groups */
+        $groups = [];
+
+        foreach ($messages as $message) {
+            $lastAttemptAt = $message->getLastAttemptAt();
+            $formatted = $lastAttemptAt === null ? null : $this->mapper->formatDateTime($lastAttemptAt);
+            $key = $message->getAttempts() . '|' . ($formatted ?? '');
+            $groups[$key] ??= ['attempts' => $message->getAttempts(), 'last_attempt_at' => $formatted, 'ids' => []];
+            $groups[$key]['ids'][] = $message->getId();
+        }
+
+        foreach ($groups as $group) {
+            $this->db->createCommand()->update(
+                table: $this->table,
+                columns: [
+                    'status' => OutboxStatus::Published->value,
+                    'attempts' => $group['attempts'],
+                    'last_attempt_at' => $group['last_attempt_at'],
+                    'claimed_by' => null,
+                    'claimed_at' => null,
+                ],
+                condition: ['id' => $group['ids']],
+            )->execute();
+        }
     }
 
     #[\Override]
@@ -273,6 +343,17 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface
         return $this->db->createCommand()->delete(
             table: $this->table,
             condition: ['status' => $status->value],
+        )->execute();
+    }
+
+    /**
+     * @param non-empty-list<string> $ids
+     */
+    private function deleteByIds(array $ids): void
+    {
+        $this->db->createCommand()->delete(
+            table: $this->table,
+            condition: ['id' => $ids],
         )->execute();
     }
 

@@ -19,8 +19,16 @@ return [
             ((string) ($config['table_prefix'] ?? '')) . ((string) ($config['table'] ?? 'outbox')),
         );
     },
-    StorageInterface::class => static fn (
+    StorageInterface::class => static function (
         ConnectionInterface $db,
         OutboxTableName $table,
-    ): DbOutboxStorage => new DbOutboxStorage(db: $db, table: $table->value),
+    ) use ($params): DbOutboxStorage {
+        $config = $params['rasuvaeff/yii3-outbox-db'] ?? [];
+
+        return new DbOutboxStorage(
+            db: $db,
+            table: $table->value,
+            deletePublished: (bool) ($config['delete_published'] ?? false),
+        );
+    },
 ];
