@@ -218,29 +218,29 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
         // ends up exactly as markPublished() would have left it. A batch
         // acknowledged by one consumer shares the attempt stamp, so in practice
         // that is one statement.
-        /** @var array<string, array{attempts: int, last_attempt_at: string|null, ids: list<string>}> $groups */
-        $groups = [];
+        /** @var array<int, array<string, non-empty-list<string>>> $batches attempts → last_attempt_at ('' for none) → ids */
+        $batches = [];
 
         foreach ($messages as $message) {
             $lastAttemptAt = $message->getLastAttemptAt();
-            $formatted = $lastAttemptAt === null ? null : $this->mapper->formatDateTime($lastAttemptAt);
-            $key = $message->getAttempts() . '|' . ($formatted ?? '');
-            $groups[$key] ??= ['attempts' => $message->getAttempts(), 'last_attempt_at' => $formatted, 'ids' => []];
-            $groups[$key]['ids'][] = $message->getId();
+            $stamp = $lastAttemptAt === null ? '' : $this->mapper->formatDateTime($lastAttemptAt);
+            $batches[$message->getAttempts()][$stamp][] = $message->getId();
         }
 
-        foreach ($groups as $group) {
-            $this->db->createCommand()->update(
-                table: $this->table,
-                columns: [
-                    'status' => OutboxStatus::Published->value,
-                    'attempts' => $group['attempts'],
-                    'last_attempt_at' => $group['last_attempt_at'],
-                    'claimed_by' => null,
-                    'claimed_at' => null,
-                ],
-                condition: ['id' => $group['ids']],
-            )->execute();
+        foreach ($batches as $attempts => $byStamp) {
+            foreach ($byStamp as $stamp => $ids) {
+                $this->db->createCommand()->update(
+                    table: $this->table,
+                    columns: [
+                        'status' => OutboxStatus::Published->value,
+                        'attempts' => $attempts,
+                        'last_attempt_at' => $stamp === '' ? null : $stamp,
+                        'claimed_by' => null,
+                        'claimed_at' => null,
+                    ],
+                    condition: ['id' => $ids],
+                )->execute();
+            }
         }
     }
 

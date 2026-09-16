@@ -217,21 +217,36 @@ final class SqliteIntegrationTest
     {
         $storage = $this->createStorage();
         $storage->save($this->attempted(id: 'once', attempts: 1, lastAttemptAt: '2026-06-11 11:00:00'));
+        $storage->save($this->attempted(id: 'once-later', attempts: 1, lastAttemptAt: '2026-06-11 11:20:00'));
         $storage->save($this->attempted(id: 'twice', attempts: 2, lastAttemptAt: '2026-06-11 11:30:00'));
+        $storage->save($this->attempted(id: 'twice-same', attempts: 2, lastAttemptAt: '2026-06-11 11:30:00'));
         $storage->save($this->pending(id: 'fresh', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        $storage->save($this->pending(id: 'fresh-too', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00'));
         $claimed = $storage->claim();
 
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
         $storage->markPublishedBatch($claimed);
+        $this->db->setProfiler(null);
 
-        Assert::same($storage->getById('once')?->getAttempts(), 1);
-        Assert::same($storage->getById('once')?->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 11:00:00');
-        Assert::same($storage->getById('twice')?->getAttempts(), 2);
-        Assert::same($storage->getById('twice')?->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 11:30:00');
-        Assert::same($storage->getById('fresh')?->getAttempts(), 0);
-        Assert::null($storage->getById('fresh')?->getLastAttemptAt());
+        // (1, 11:00), (1, 11:20), (2, 11:30), (0, none): four distinct stamps
+        Assert::same($profiler->statements, 4);
 
-        foreach (['once', 'twice', 'fresh'] as $id) {
-            Assert::same($storage->getById($id)?->getStatus(), OutboxStatus::Published);
+        $expected = [
+            'once' => [1, '2026-06-11 11:00:00'],
+            'once-later' => [1, '2026-06-11 11:20:00'],
+            'twice' => [2, '2026-06-11 11:30:00'],
+            'twice-same' => [2, '2026-06-11 11:30:00'],
+            'fresh' => [0, null],
+            'fresh-too' => [0, null],
+        ];
+
+        foreach ($expected as $id => [$attempts, $lastAttemptAt]) {
+            $loaded = $storage->getById($id);
+            Assert::notNull($loaded);
+            Assert::same($loaded->getStatus(), OutboxStatus::Published);
+            Assert::same($loaded->getAttempts(), $attempts);
+            Assert::same($loaded->getLastAttemptAt()?->format('Y-m-d H:i:s'), $lastAttemptAt);
         }
     }
 
