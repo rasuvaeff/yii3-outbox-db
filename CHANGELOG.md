@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.5.0 — 2026-09-18
+
+### Added
+
+- `skipLocked: true` (params `skip_locked`): the claim's id select runs
+  `FOR UPDATE SKIP LOCKED`, so concurrent workers take disjoint rows at once
+  instead of waiting on each other's row locks. MySQL 8+ and PostgreSQL 9.5+
+  only — SQLite has no `FOR` clause and rejects the claim with
+  `NotSupportedException`. Verified on both engines by
+  `CrossDatabaseMigrationTest`: a claim skips a row another transaction holds
+  locked and takes it once the lock is gone (#33).
+
 ## 2.4.0 — 2026-09-18
 
 ### Added

@@ -44,6 +44,11 @@ use Yiisoft\Db\Query\Query;
  * {@see self::findStaleClaims()} / {@see self::releaseStaleClaims()} for the
  * rows a killed worker leaves behind in `Processing`.
  *
+ * With `skipLocked: true` the claim selects its candidate ids with
+ * `FOR UPDATE SKIP LOCKED`, so two workers claiming at once take disjoint rows
+ * without one waiting on the other's row locks. MySQL 8+ and PostgreSQL 9.5+
+ * only: SQLite has no `FOR` clause and rejects the claim at query time.
+ *
  * With `requireTransaction: true` a write that creates a new row — the one
  * `Outbox::record()` makes — throws {@see OutboxWriteOutsideTransactionException}
  * unless a transaction is open on the connection. The outbox pattern only holds
@@ -77,6 +82,8 @@ final readonly class DbOutboxStorage implements
      * @param bool $requireTransaction throw {@see OutboxWriteOutsideTransactionException}
      *                                 when a new row is written with no
      *                                 transaction open — see the class description
+     * @param bool $skipLocked claim with `FOR UPDATE SKIP LOCKED` (MySQL 8+,
+     *                         PostgreSQL 9.5+; not SQLite) — see the class description
      *
      * @throws \InvalidArgumentException when the name is not a valid identifier
      */
@@ -86,6 +93,7 @@ final readonly class DbOutboxStorage implements
         private ?ClockInterface $clock = null,
         private bool $deletePublished = false,
         private bool $requireTransaction = false,
+        private bool $skipLocked = false,
     ) {
         // validation lives in the value object, so the storage and the bundled
         // migration cannot disagree about what a valid table name is
@@ -295,6 +303,13 @@ final readonly class DbOutboxStorage implements
 
             if ($eligible !== null) {
                 $query->andWhere($eligible);
+            }
+
+            // Rows another worker holds locked are skipped rather than waited
+            // for; the `status = 'pending'` guard on the UPDATE below still
+            // decides, so the token scheme is unchanged.
+            if ($this->skipLocked) {
+                $query->for('UPDATE SKIP LOCKED');
             }
 
             $ids = $query->column();

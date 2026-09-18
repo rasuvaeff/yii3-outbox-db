@@ -29,5 +29,9 @@ return [
         // cannot survive; costs one existence check per non-transactional
         // save(), so enable it in development and CI
         'require_transaction' => false,
+        // claim with FOR UPDATE SKIP LOCKED so concurrent workers never wait on
+        // each other's row locks; MySQL 8+ / PostgreSQL 9.5+ only, SQLite
+        // rejects the claim at query time
+        'skip_locked' => false,
     ],
 ];

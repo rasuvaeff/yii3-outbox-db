@@ -19,6 +19,7 @@ use Testo\Expect;
 use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
+use Yiisoft\Db\Exception\NotSupportedException;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
@@ -94,6 +95,19 @@ final class ConfigWiringTest
         $storage->save($this->message());
     }
 
+    public function storageFactoryHonoursSkipLocked(): void
+    {
+        $storage = $this->resolveStorage([
+            'rasuvaeff/yii3-outbox-db' => ['skip_locked' => true],
+        ]);
+        $storage->save($this->message());
+
+        // the only observable effect on SQLite: the FOR clause is rejected
+        Expect::exception(NotSupportedException::class);
+
+        $storage->claim();
+    }
+
     public function paramsRegisterTheThreeConsoleCommands(): void
     {
         /** @var array<string, mixed> $params */
@@ -105,6 +119,7 @@ final class ConfigWiringTest
             'outbox:requeue' => RequeueFailedOutboxCommand::class,
         ]]);
         Assert::same($params['rasuvaeff/yii3-outbox-db']['require_transaction'], expected: false);
+        Assert::same($params['rasuvaeff/yii3-outbox-db']['skip_locked'], expected: false);
     }
 
     public function storageFactoryHonoursDeletePublished(): void

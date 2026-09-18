@@ -25,6 +25,10 @@ composer require rasuvaeff/yii3-outbox-db
   BY status`.
 - `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)`: with
   `$olderThan`, only rows with `created_at < $olderThan`.
+- Constructor flag `skipLocked: false` (params `skip_locked`): `true` makes the
+  claim's id select `FOR UPDATE SKIP LOCKED`, so concurrent workers take
+  disjoint rows without waiting on each other's locks. MySQL 8+/PostgreSQL
+  9.5+; SQLite throws `NotSupportedException` at claim time.
 - Constructor flag `requireTransaction: false` (params `require_transaction`):
   `true` makes `save()` of a *new* row and `saveBatch()` throw
   `Exception\OutboxWriteOutsideTransactionException` when
@@ -152,7 +156,7 @@ only — `yiisoft/db-sqlite` cannot drop a column.
 
 ```php
 // config/common/params.php
-'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox', 'delete_published' => false, 'require_transaction' => false],
+'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox', 'delete_published' => false, 'require_transaction' => false, 'skip_locked' => false],
 'yiisoft/yii-console' => ['commands' => ['outbox:purge' => ..., 'outbox:release-stale' => ..., 'outbox:requeue' => ...]], // shipped
 ```
 

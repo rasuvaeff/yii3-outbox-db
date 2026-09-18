@@ -203,6 +203,23 @@ AND (attempts >= :maxAttempts
 `markPublished()`, `markFailed()` или `save($message->withStatus(OutboxStatus::Pending))`
 для освобождения.
 
+**Несколько воркеров на MySQL или PostgreSQL: `skipLocked: true`.** Схема с
+токеном корректна при любом числе воркеров, но их claim'ы сериализуются на
+строчных блокировках: воркер, чьи строки-кандидаты пересекаются с чужими,
+ждёт завершения той транзакции (на MySQL — до `innodb_lock_wait_timeout`,
+50 с по умолчанию), прежде чем узнает, что строки уже забраны. С флагом
+выборка id идёт через `FOR UPDATE SKIP LOCKED`, так что claim сразу берёт
+свободное и никогда не ждёт соседа:
+
+```php
+new DbOutboxStorage(db: $connection, skipLocked: true);
+// или params: 'skip_locked' => true
+```
+
+Только MySQL 8+ и PostgreSQL 9.5+. У SQLite нет `FOR`, и claim отвергается
+`NotSupportedException` в момент запроса — в тестовом окружении на SQLite
+флаг держите выключенным.
+
 #### Восстановление зависших claim'ов
 
 Воркер, убитый между `claim()` и финализирующей записью — SIGKILL под
@@ -333,6 +350,7 @@ config-plugin биндит `StorageInterface` на `DbOutboxStorage` из `confi
     'table' => 'outbox',
     'delete_published' => false,    // true: подтверждённые строки удаляются, cron-очистка не нужна
     'require_transaction' => false, // true в dev/CI: record() вне транзакции бросает
+    'skip_locked' => false,         // true на MySQL 8+/PostgreSQL 9.5+ при нескольких воркерах
 ],
 ```
 
