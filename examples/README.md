@@ -2,7 +2,7 @@
 
 | Script | Shows | Needs server? |
 |---|---|---|
-| `basic-usage.php` | record → durable persist → type-filtered poll → markPublished with SQLite | No |
+| `basic-usage.php` | record → durable persist → type-filtered poll → markPublished → stale-claim recovery → `stats()` / `requeue()` / bounded `deleteByStatus()` with SQLite | No |
 
 ## Running
 

@@ -25,7 +25,8 @@
     "require": {
         "php": "8.3 - 8.5",
         "psr/clock": "^1.0",
-        "rasuvaeff/yii3-outbox": "^1.6",
+        "rasuvaeff/yii3-outbox": "^1.7",
+        "symfony/console": "^6.4 || ^7.0",
         "yiisoft/db": "^2.0",
         "yiisoft/db-migration": "^2.1"
     },
@@ -42,6 +43,8 @@
         "testo/testo": "^0.10.25",
         "vimeo/psalm": "^6.16",
         "yiisoft/cache": "^3.2",
+        "yiisoft/db-mysql": "^2.0",
+        "yiisoft/db-pgsql": "^2.0",
         "yiisoft/db-sqlite": "^2.0",
         "yiisoft/injector": "^1.2",
         "yiisoft/test-support": "^3.1"
@@ -64,11 +67,16 @@
         },
         "platform": {
             "ext-bcmath": "1.0.0",
-            "ext-intl": "1.0.0"
+            "ext-intl": "1.0.0",
+            "ext-pdo_mysql": "1.0.0",
+            "ext-pdo_pgsql": "1.0.0"
         },
         "sort-packages": true
     },
     "extra": {
+        "branch-alias": {
+            "dev-master": "2.x-dev"
+        },
         "config-plugin": {
             "di": "di.php",
             "params": "params.php"

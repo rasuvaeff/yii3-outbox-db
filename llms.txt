@@ -10,8 +10,35 @@ composer require rasuvaeff/yii3-outbox-db
 
 ## Rules
 
-- `DbOutboxStorage implements Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface, Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface` (core ^1.6)
-  (which extends `StorageInterface`). Requires `rasuvaeff/yii3-outbox` ^1.5.
+- `DbOutboxStorage` implements every optional core capability (core ^1.7):
+  `RetryAwareStorageInterface`, `BatchAcknowledgingStorageInterface`,
+  `BatchSavingStorageInterface`, `RequeueableStorageInterface`,
+  `StatsAwareStorageInterface` (all extend `StorageInterface`).
+- `saveBatch(list<OutboxMessage>)`: one multi-row INSERT (what
+  `Outbox::recordMany()` calls). New rows only — no upsert; a duplicate id is
+  the database's integrity error.
+- `findFailed(types = [], limit = 1000)` / `requeue(OutboxMessage): bool`:
+  `Failed` rows `created_at` ASC; one `UPDATE ... WHERE id = ? AND status =
+  'failed'` setting Pending/attempts 0/last_attempt_at NULL/claim cleared —
+  the row's current status decides, `false` when it is no longer Failed.
+- `stats(): OutboxStats`: one `SELECT status, COUNT(*), MIN(created_at) GROUP
+  BY status`.
+- `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)`: with
+  `$olderThan`, only rows with `created_at < $olderThan`.
+- Constructor flag `requireTransaction: false` (params `require_transaction`):
+  `true` makes `save()` of a *new* row and `saveBatch()` throw
+  `Exception\OutboxWriteOutsideTransactionException` when
+  `$db->getTransaction()` is not active — catches `record()` placed outside
+  the business transaction. Updates of existing rows (worker re-saves) pass;
+  costs one `EXISTS` query per non-transactional `save()`. For dev/CI.
+- Console (`Console\PurgeOutboxCommand`, `Console\ReleaseStaleOutboxClaimsCommand`,
+  `Console\RequeueFailedOutboxCommand`; registered in `config/params.php`
+  under `yiisoft/yii-console`, need `symfony/console`): `outbox:purge [--status=published|failed]
+  [--older-than=7d]`, `outbox:release-stale [--claimed-before=15m]
+  [--limit=1000]`, `outbox:requeue [--type=T]... [--limit=1000]`. Ages are
+  `<int><s|m|h|d>`; bad values exit `Command::INVALID`. purge/release-stale
+  need `StorageInterface` to be `DbOutboxStorage`; requeue any
+  `RequeueableStorageInterface`.
 - `save()` upserts by `OutboxMessage::getId()` — the durable identity and the
   at-least-once dedup anchor; never regenerate it.
 - `claim(array $types = [], int $limit = 1000)`: **what workers must use.**
@@ -86,7 +113,12 @@ $storage->markPublished($message);
 $storage->markPublishedBatch($claimed);   // one statement; DELETE with deletePublished: true
 $storage->markFailed($message);
 $message = $storage->getById($id);          // ?OutboxMessage
-$purged  = $storage->deleteByStatus(OutboxStatus::Published);
+$purged  = $storage->deleteByStatus(OutboxStatus::Published, olderThan: $now->modify('-7 days'));
+$storage->saveBatch([$a, $b]);                        // one INSERT, new rows only
+$failed  = $storage->findFailed(types: ['ab.exposure'], limit: 100);
+$moved   = $storage->requeue($failed[0]);             // bool
+$stats   = $storage->stats();                         // OutboxStats: pending/processing/published/failed/oldestPendingCreatedAt
+$guarded = new DbOutboxStorage(db: $connection, requireTransaction: true); // dev/CI: record() outside a transaction throws
 ```
 
 ## Migration
@@ -119,8 +151,9 @@ only — `yiisoft/db-sqlite` cannot drop a column.
 ## DI / params
 
 ```php
-// config/params.php
-'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox', 'delete_published' => false],
+// config/common/params.php
+'rasuvaeff/yii3-outbox-db' => ['table' => 'outbox', 'delete_published' => false, 'require_transaction' => false],
+'yiisoft/yii-console' => ['commands' => ['outbox:purge' => ..., 'outbox:release-stale' => ..., 'outbox:requeue' => ...]], // shipped
 ```
 
 Binds `StorageInterface => DbOutboxStorage` from `config/di.php`.

@@ -1,5 +1,48 @@
 # Changelog
 
+## 2.4.0 — 2026-09-18
+
+### Added
+
+- `DbOutboxStorage` implements the three optional capabilities of
+  `rasuvaeff/yii3-outbox` 1.7: `BatchSavingStorageInterface::saveBatch()` as
+  one multi-row `INSERT` (new rows only, no upsert),
+  `RequeueableStorageInterface::findFailed()` / `requeue()` — the latter one
+  `UPDATE ... WHERE id = ? AND status = 'failed'`, so the row's current
+  status decides — and `StatsAwareStorageInterface::stats()` as one
+  `GROUP BY status` query. The core constraint is `^1.7` (#32).
+- `deleteByStatus()` takes an optional `$olderThan`: a `Published` purge can
+  keep the recent rows an audit or a deduplication check still wants (#30).
+- Three console commands, registered for `yiisoft/yii-console` in
+  `config/params.php` (`symfony/console` is now a dependency):
+  `outbox:purge [--status=published|failed] [--older-than=7d]`,
+  `outbox:release-stale [--claimed-before=15m] [--limit=1000]` and
+  `outbox:requeue [--type=T]... [--limit=1000]`. Ages are `<int><s|m|h|d>`;
+  a malformed value exits `Command::INVALID` without touching a row (#30).
+- `requireTransaction: true` (params `require_transaction`): a `save()` that
+  would create a new row, or a `saveBatch()`, throws
+  `Exception\OutboxWriteOutsideTransactionException` when no transaction is
+  open on the connection — the cheap way to catch `Outbox::record()` placed
+  outside the business transaction, in development and CI. Worker re-saves of
+  existing rows pass; the mode costs one existence check per
+  non-transactional `save()` (#31).
+- `CrossDatabaseMigrationTest` applies both migrations up and down and drives
+  the storage's engine-sensitive writes (`upsert`, `insertBatch`, the token
+  claim, `stats()`) on MySQL 8.4 and PostgreSQL 17; the ungated
+  `database-integration` matrix job in CI supplies both (#28).
+
+### Fixed
+
+- README: `yiisoft/db-migration` requirement is `^2.1`, not `^2.0` — 2.1.0 is
+  where `setSourceNamespaces()` finds a vendor migration at all; the
+  readiness-pushdown section claimed core `^1.5` while the package requires
+  `^1.6`; the two params examples disagreed on the config path (#29).
+- `release.yml` verifies that the tag points at validated `master` history
+  before publishing a GitHub Release (template of 2026-08-22).
+- `composer.json` declares `extra.branch-alias` (`dev-master` → `2.x-dev`) so
+  the family's config-merge harness can resolve the package from a path
+  repository (rasuvaeff/yii3-outbox#32).
+
 ## 2.3.0 — 2026-09-16
 
 ### Added

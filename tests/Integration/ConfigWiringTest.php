@@ -7,10 +7,15 @@ namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
+use Rasuvaeff\Yii3OutboxDb\Console\PurgeOutboxCommand;
+use Rasuvaeff\Yii3OutboxDb\Console\ReleaseStaleOutboxClaimsCommand;
+use Rasuvaeff\Yii3OutboxDb\Console\RequeueFailedOutboxCommand;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
+use Rasuvaeff\Yii3OutboxDb\Exception\OutboxWriteOutsideTransactionException;
 use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
+use Testo\Expect;
 use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
@@ -78,6 +83,30 @@ final class ConfigWiringTest
         Assert::same($storage->getById($message->getId())?->getStatus(), OutboxStatus::Published);
     }
 
+    public function storageFactoryHonoursRequireTransaction(): void
+    {
+        $storage = $this->resolveStorage([
+            'rasuvaeff/yii3-outbox-db' => ['require_transaction' => true],
+        ]);
+
+        Expect::exception(OutboxWriteOutsideTransactionException::class);
+
+        $storage->save($this->message());
+    }
+
+    public function paramsRegisterTheThreeConsoleCommands(): void
+    {
+        /** @var array<string, mixed> $params */
+        $params = require dirname(__DIR__, 2) . '/config/params.php';
+
+        Assert::same($params['yiisoft/yii-console'], ['commands' => [
+            'outbox:purge' => PurgeOutboxCommand::class,
+            'outbox:release-stale' => ReleaseStaleOutboxClaimsCommand::class,
+            'outbox:requeue' => RequeueFailedOutboxCommand::class,
+        ]]);
+        Assert::same($params['rasuvaeff/yii3-outbox-db']['require_transaction'], expected: false);
+    }
+
     public function storageFactoryHonoursDeletePublished(): void
     {
         $storage = $this->resolveStorage([
@@ -110,13 +139,16 @@ final class ConfigWiringTest
     }
 
     /**
+     * The file reads `$params` from its scope; the closure is what makes that
+     * scope explicit enough for rector to see the parameter is used.
+     *
      * @param array<string, mixed> $params
      *
      * @return array<string, mixed>
      */
     private function loadDb(array $params): array
     {
-        return require dirname(__DIR__, 2) . '/config/di.php';
+        return (static fn(array $params): array => require dirname(__DIR__, 2) . '/config/di.php')($params);
     }
 
     private function message(): OutboxMessage

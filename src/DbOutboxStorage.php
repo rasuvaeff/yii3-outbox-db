@@ -6,10 +6,15 @@ namespace Rasuvaeff\Yii3OutboxDb;
 
 use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
+use Rasuvaeff\Yii3Outbox\BatchSavingStorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStats;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3Outbox\RequeueableStorageInterface;
 use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
+use Rasuvaeff\Yii3Outbox\StatsAwareStorageInterface;
 use Rasuvaeff\Yii3Outbox\StorageInterface;
+use Rasuvaeff\Yii3OutboxDb\Exception\OutboxWriteOutsideTransactionException;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Query\Query;
 
@@ -28,14 +33,35 @@ use Yiisoft\Db\Query\Query;
  * is `$deletePublished`, and it governs {@see self::markPublished()} too — every
  * producer of acknowledgements then agrees on what the table holds.
  *
- * Beyond the interface it exposes two operational helpers that no storage
+ * The other optional capabilities of the core are here too:
+ * {@see BatchSavingStorageInterface} (one multi-row insert for
+ * `Outbox::recordMany()`), {@see RequeueableStorageInterface} (`Failed` back
+ * to `Pending`, decided by the row's current status in one `UPDATE`) and
+ * {@see StatsAwareStorageInterface} (one `GROUP BY status` query).
+ *
+ * Beyond the interfaces it exposes two operational helpers that no storage
  * contract can express: {@see self::deleteByStatus()} for retention, and
  * {@see self::findStaleClaims()} / {@see self::releaseStaleClaims()} for the
  * rows a killed worker leaves behind in `Processing`.
  *
+ * With `requireTransaction: true` a write that creates a new row — the one
+ * `Outbox::record()` makes — throws {@see OutboxWriteOutsideTransactionException}
+ * unless a transaction is open on the connection. The outbox pattern only holds
+ * when that write commits with the business row, and this is the cheap way to
+ * catch a `record()` that was placed outside the transaction, in the
+ * environment where it is cheap to catch: development and CI. A state change
+ * on an existing row — a worker saving a message back as `Pending`, a release —
+ * is not subject to it, which costs one existence check per non-transactional
+ * `save()` in that mode.
+ *
  * @api
  */
-final readonly class DbOutboxStorage implements RetryAwareStorageInterface, BatchAcknowledgingStorageInterface
+final readonly class DbOutboxStorage implements
+    RetryAwareStorageInterface,
+    BatchAcknowledgingStorageInterface,
+    BatchSavingStorageInterface,
+    RequeueableStorageInterface,
+    StatsAwareStorageInterface
 {
     private OutboxRowMapper $mapper;
 
@@ -48,6 +74,9 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
      *                              `Pending`/`Processing`/`Failed` rows and needs
      *                              no `deleteByStatus(Published)` purge, at the
      *                              price of the audit trail of what was sent
+     * @param bool $requireTransaction throw {@see OutboxWriteOutsideTransactionException}
+     *                                 when a new row is written with no
+     *                                 transaction open — see the class description
      *
      * @throws \InvalidArgumentException when the name is not a valid identifier
      */
@@ -56,6 +85,7 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
         string $table = 'outbox',
         private ?ClockInterface $clock = null,
         private bool $deletePublished = false,
+        private bool $requireTransaction = false,
     ) {
         // validation lives in the value object, so the storage and the bundled
         // migration cannot disagree about what a valid table name is
@@ -66,18 +96,79 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
     #[\Override]
     public function save(OutboxMessage $message): void
     {
+        if ($this->requireTransaction && !$this->inTransaction() && !$this->exists($message->getId())) {
+            throw new OutboxWriteOutsideTransactionException(sprintf(
+                'Outbox message "%s" is being recorded outside a transaction; Outbox::record() must run inside the business transaction',
+                $message->getId(),
+            ));
+        }
+
         $this->db->createCommand()->upsert(
             table: $this->table,
             insertColumns: $this->toColumns(message: $message),
         )->execute();
     }
 
+    /**
+     * One multi-row `INSERT`. The rows are new by contract — this is what
+     * `Outbox::recordMany()` writes — so unlike {@see self::save()} it does not
+     * upsert, and a duplicate id is the database's error to raise.
+     */
+    #[\Override]
+    public function saveBatch(array $messages): void
+    {
+        if ($messages === []) {
+            return;
+        }
+
+        if ($this->requireTransaction && !$this->inTransaction()) {
+            throw new OutboxWriteOutsideTransactionException(sprintf(
+                '%d outbox messages are being recorded outside a transaction; Outbox::recordMany() must run inside the business transaction',
+                \count($messages),
+            ));
+        }
+
+        $rows = [];
+
+        foreach ($messages as $message) {
+            $rows[] = $this->toColumns(message: $message);
+        }
+
+        $this->db->createCommand()->insertBatch(table: $this->table, rows: $rows)->execute();
+    }
+
+    private function inTransaction(): bool
+    {
+        return $this->db->getTransaction()?->isActive() === true;
+    }
+
+    private function exists(string $id): bool
+    {
+        return (new Query($this->db))->from($this->table)->where(condition: ['id' => $id])->exists();
+    }
+
     #[\Override]
     public function findPending(array $types = [], int $limit = 1000): array
     {
+        return $this->findByStatus(OutboxStatus::Pending, $types, $limit);
+    }
+
+    #[\Override]
+    public function findFailed(array $types = [], int $limit = 1000): array
+    {
+        return $this->findByStatus(OutboxStatus::Failed, $types, $limit);
+    }
+
+    /**
+     * @param list<string> $types
+     *
+     * @return list<OutboxMessage>
+     */
+    private function findByStatus(OutboxStatus $status, array $types, int $limit): array
+    {
         $query = (new Query($this->db))
             ->from($this->table)
-            ->where(condition: ['status' => OutboxStatus::Pending->value])
+            ->where(condition: ['status' => $status->value])
             ->orderBy(['created_at' => SORT_ASC])
             ->limit($limit);
 
@@ -93,6 +184,65 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
         }
 
         return $messages;
+    }
+
+    /**
+     * One `UPDATE ... WHERE id = :id AND status = 'failed'`: the row's current
+     * status decides, not the caller's snapshot, so a message a worker or
+     * another operator moved meanwhile is left alone.
+     */
+    #[\Override]
+    public function requeue(OutboxMessage $message): bool
+    {
+        $updated = $this->db->createCommand()->update(
+            table: $this->table,
+            columns: [
+                'status' => OutboxStatus::Pending->value,
+                'attempts' => 0,
+                'last_attempt_at' => null,
+                'claimed_by' => null,
+                'claimed_at' => null,
+            ],
+            condition: ['id' => $message->getId(), 'status' => OutboxStatus::Failed->value],
+        )->execute();
+
+        return $updated > 0;
+    }
+
+    #[\Override]
+    public function stats(): OutboxStats
+    {
+        $counts = [
+            OutboxStatus::Pending->value => 0,
+            OutboxStatus::Processing->value => 0,
+            OutboxStatus::Published->value => 0,
+            OutboxStatus::Failed->value => 0,
+        ];
+        $oldestPending = null;
+
+        $rows = (new Query($this->db))
+            ->select(['status', 'total' => 'COUNT(*)', 'oldest' => 'MIN(created_at)'])
+            ->from($this->table)
+            ->groupBy(['status'])
+            ->all();
+
+        foreach ($rows as $row) {
+            /** @var array<array-key, mixed> $row */
+            $status = $this->mapper->extractStatus(row: $row);
+            $counts[$status->value] = $this->mapper->extractInt(row: $row, column: 'total');
+
+            if ($status === OutboxStatus::Pending) {
+                $oldestPending = $this->mapper->extractNullableDateTime(row: $row, column: 'oldest');
+            }
+        }
+
+        return new OutboxStats(
+            pending: $counts[OutboxStatus::Pending->value],
+            processing: $counts[OutboxStatus::Processing->value],
+            published: $counts[OutboxStatus::Published->value],
+            failed: $counts[OutboxStatus::Failed->value],
+            oldestPendingCreatedAt: $oldestPending,
+        );
     }
 
     #[\Override]
@@ -338,11 +488,24 @@ final readonly class DbOutboxStorage implements RetryAwareStorageInterface, Batc
         });
     }
 
-    public function deleteByStatus(OutboxStatus $status): int
+    /**
+     * Deletes every row in the given status — or, with $olderThan, only those
+     * created before that moment, so a `Published` purge can keep the recent
+     * rows an audit or a deduplication check may still want to see.
+     *
+     * @return int rows deleted
+     */
+    public function deleteByStatus(OutboxStatus $status, ?\DateTimeImmutable $olderThan = null): int
     {
+        $condition = ['status' => $status->value];
+
+        if ($olderThan !== null) {
+            $condition = ['and', $condition, ['<', 'created_at', $this->mapper->formatDateTime($olderThan)]];
+        }
+
         return $this->db->createCommand()->delete(
             table: $this->table,
-            condition: ['status' => $status->value],
+            condition: $condition,
         )->execute();
     }
 

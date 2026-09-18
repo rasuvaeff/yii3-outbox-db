@@ -41,10 +41,7 @@ final readonly class OutboxRowMapper
                 aggregateId: $aggregateId,
             );
         } catch (\InvalidArgumentException $e) {
-            throw new InvalidOutboxRowException(
-                message: sprintf('Invalid outbox row: %s', $e->getMessage()),
-                previous: $e,
-            );
+            throw new InvalidOutboxRowException(message: sprintf('Invalid outbox row: %s', $e->getMessage()), code: $e->getCode(), previous: $e);
         }
     }
 
@@ -61,7 +58,7 @@ final readonly class OutboxRowMapper
     /**
      * @param array<array-key, mixed> $row
      */
-    private function extractStatus(array $row): OutboxStatus
+    public function extractStatus(array $row): OutboxStatus
     {
         $value = $this->extractString(row: $row, column: 'status');
         $status = OutboxStatus::tryFrom($value);
@@ -80,17 +77,14 @@ final readonly class OutboxRowMapper
         try {
             return new \DateTimeImmutable($value, new \DateTimeZone('UTC'));
         } catch (\Exception $e) {
-            throw new InvalidOutboxRowException(
-                message: sprintf('Invalid "%s" datetime: %s', $column, $value),
-                previous: $e,
-            );
+            throw new InvalidOutboxRowException(message: sprintf('Invalid "%s" datetime: %s', $column, $value), code: (int) $e->getCode(), previous: $e);
         }
     }
 
     /**
      * @param array<array-key, mixed> $row
      */
-    private function extractNullableDateTime(array $row, string $column): ?\DateTimeImmutable
+    public function extractNullableDateTime(array $row, string $column): ?\DateTimeImmutable
     {
         if (!array_key_exists($column, $row) || $row[$column] === null) {
             return null;
@@ -140,7 +134,7 @@ final readonly class OutboxRowMapper
     /**
      * @param array<array-key, mixed> $row
      */
-    private function extractInt(array $row, string $column): int
+    public function extractInt(array $row, string $column): int
     {
         if (!isset($row[$column])) {
             throw new InvalidOutboxRowException(
