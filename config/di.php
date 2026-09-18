@@ -29,6 +29,7 @@ return [
             db: $db,
             table: $table->value,
             deletePublished: (bool) ($config['delete_published'] ?? false),
+            requireTransaction: (bool) ($config['require_transaction'] ?? false),
         );
     },
 ];

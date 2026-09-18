@@ -19,8 +19,10 @@
 ## Требования
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.6
-- `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.0
+- `rasuvaeff/yii3-outbox` ^1.7
+- `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.1 (только с 2.1.0
+  `setSourceNamespaces()` вообще находит vendor-миграцию)
+- `symfony/console` ^6.4 || ^7.0 — для трёх служебных команд
 
 ## Установка
 
@@ -134,6 +136,7 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | Метод | Назначение |
 |---|---|
 | `save(OutboxMessage)` | upsert по `id` (первичная запись или пересохранение при retry) |
+| `saveBatch(list<OutboxMessage>)` | один multi-row `INSERT` (`BatchSavingStorageInterface`); это вызывает `Outbox::recordMany()`. Только новые строки — дубль id отвергает база |
 | `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | тот же захват без строк, ещё ждущих окончания backoff. Именно это вызывает `Processor` |
 | `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
@@ -141,7 +144,10 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `markPublishedBatch(list<OutboxMessage>)` | то же для целого батча одним statement'ом (`BatchAcknowledgingStorageInterface`); это вызывает `yii3-outbox-clickhouse` |
 | `markFailed(OutboxMessage)` | пересохранить со статусом `Failed` |
 | `getById(string $id)` | одно сообщение или `null` |
-| `deleteByStatus(OutboxStatus)` | очистка (например, удалить всё со статусом `Published`); не нужна при `deletePublished: true` |
+| `findFailed(array $types = [], int $limit = 1000)` | строки `Failed`, `created_at` ASC (`RequeueableStorageInterface`) |
+| `requeue(OutboxMessage)` | один `UPDATE ... WHERE id = ? AND status = 'failed'`: обратно в `Pending`, попытки и claim сброшены. `false`, если строка уже не `Failed` |
+| `stats()` | один запрос `GROUP BY status` → `OutboxStats` (`StatsAwareStorageInterface`) |
+| `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)` | очистка (например, удалить всё со статусом `Published`), опционально только строки, созданные до `$olderThan`; не нужна при `deletePublished: true` |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | строки, всё ещё `Processing`, чей claim старше порога |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | возвращает такие строки в `Pending`; отдаёт количество |
 
@@ -180,8 +186,6 @@ AND (attempts >= :maxAttempts
   со свежим `last_attempt_at`.
 - Сообщение с исчерпанными попытками помечается `Failed` на величину до
   `delaySeconds` позже: оно ждёт батча, в который попадёт.
-
-Требует `rasuvaeff/yii3-outbox` ^1.5.
 
 #### `claim()` против `findPending()`
 
@@ -225,7 +229,51 @@ $released = $storage->releaseStaleClaims($threshold);
 удерживается живым claim'ом — ровно об этом и говорит пустой `claimed_by`.
 
 Растущее число `Processing` по-прежнему повод для алерта — но теперь у него
-есть и лекарство.
+есть и лекарство. `stats()` — способ прочитать его без SQL:
+
+```php
+$stats = $storage->stats();           // один запрос GROUP BY
+$stats->processing;                   // за чем следит алерт
+$stats->failed;                       // за чем следит второй алерт
+$stats->oldestPendingAgeSeconds($clock->now());   // насколько отстаёт воркер
+```
+
+#### Консольные команды
+
+Три служебные команды — `Console\PurgeOutboxCommand`,
+`Console\ReleaseStaleOutboxClaimsCommand`, `Console\RequeueFailedOutboxCommand`
+— зарегистрированы для `yiisoft/yii-console` (работают в любом приложении на
+Symfony Console; контейнеру нужен `StorageInterface`, забинденный на
+`DbOutboxStorage`, — это делает `config/di.php`):
+
+```bash
+./yii outbox:release-stale --claimed-before=15m        # тот самый cron; по умолчанию 15m, --limit=1000
+./yii outbox:purge --older-than=7d                     # строки Published, созданные более 7 дней назад
+./yii outbox:purge --status=failed --older-than=30d    # или Failed; Pending/Processing никогда не чистятся
+./yii outbox:requeue --type=order.created --limit=500  # Failed -> Pending с обнулёнными попытками; по умолчанию все типы
+```
+
+Возраст — `<число><единица>` с `s`, `m`, `h` или `d`; некорректный возраст
+или лимит завершается `Command::INVALID`, не тронув ни строки. Без
+`--older-than` `outbox:purge` удаляет все строки в статусе — поведение до 2.4.
+
+#### Страховка транзакции в разработке
+
+Паттерн outbox держится только тогда, когда `record()` выполняется внутри
+бизнес-транзакции, и в production ничто не может это проверить бесплатно. В
+разработке и CI цена приемлема:
+
+```php
+new DbOutboxStorage(db: $connection, requireTransaction: true);
+// или params: 'require_transaction' => true
+```
+
+`save()`, который создал бы новую строку — то, что делает `record()`, — тогда
+бросает `Exception\OutboxWriteOutsideTransactionException`, если на соединении
+не открыта транзакция; `saveBatch()` (за `recordMany()`) — так же. Воркер,
+обновляющий существующую строку между попытками, не затронут: страховка
+проверяет, существует ли строка, — это и есть тот один лишний запрос, который
+стоит режим.
 
 Фильтр `$types` позволяет нескольким потребителям — универсальному `Processor`
 и специализированному экспортёру — совместно использовать один outbox.
@@ -280,12 +328,16 @@ config-plugin биндит `StorageInterface` на `DbOutboxStorage` из `confi
 является единственным источником `StorageInterface`. Имя таблицы задаётся в params:
 
 ```php
-// config/params.php
+// config/common/params.php
 'rasuvaeff/yii3-outbox-db' => [
     'table' => 'outbox',
-    'delete_published' => false,   // true: подтверждённые строки удаляются, cron-очистка не нужна
+    'delete_published' => false,    // true: подтверждённые строки удаляются, cron-очистка не нужна
+    'require_transaction' => false, // true в dev/CI: record() вне транзакции бросает
 ],
 ```
+
+Тот же файл регистрирует `outbox:purge`, `outbox:release-stale` и
+`outbox:requeue` под `yiisoft/yii-console`.
 
 ## Безопасность
 

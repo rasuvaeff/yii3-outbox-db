@@ -27,7 +27,7 @@ use Yiisoft\Db\Migration\TransactionalMigrationInterface;
 final readonly class M260820000000AddOutboxClaimedAt implements RevertibleMigrationInterface, TransactionalMigrationInterface
 {
     public function __construct(
-        private readonly OutboxTableName $table = new OutboxTableName(),
+        private OutboxTableName $table = new OutboxTableName(),
     ) {}
 
     #[\Override]

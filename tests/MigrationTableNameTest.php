@@ -98,7 +98,7 @@ final class MigrationTableNameTest
         $migration->up($this->builder());
 
         $indexes = $this->indexNames('custom_tbl');
-        Assert::true(in_array('idx_custom_tbl_pending', $indexes, true));
+        Assert::true(in_array('idx_custom_tbl_pending', $indexes, strict: true));
     }
 
     public function indexesCoverTheDocumentedColumns(): void

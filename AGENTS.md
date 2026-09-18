@@ -125,6 +125,30 @@ make release-check
   in the storage becomes uncovered. `build.yml` runs the suite explicitly
   (`composer test:integration`) on each matrix PHP version, rather than leaving
   it to the mutation job's initial test run.
+- **`CrossDatabaseMigrationTest` is the only place the DDL and the
+  engine-sensitive SQL meet MySQL and PostgreSQL.** SQLite accepts DDL the
+  other engines reject, cannot run `down()` of the `claimed_at` migration at
+  all (`dropColumn`), and its `upsert`/`insertBatch`/aggregate paths differ.
+  The test runs only with `OUTBOX_TEST_DB=mysql|pgsql`; the ungated
+  `database-integration` matrix job in `build.yml` supplies both. Locally:
+  `docker run -d --name outbox-mysql -p 13306:3306 -e MYSQL_DATABASE=outbox
+  -e MYSQL_ROOT_PASSWORD=outbox mysql:8.4`, the same for `postgres:17` with
+  `POSTGRES_DB=outbox POSTGRES_PASSWORD=outbox` on 15432, then
+  `OUTBOX_TEST_DB=mysql OUTBOX_TEST_MYSQL_PORT=13306 vendor/bin/testo
+  --suite=Integration` in a PHP image that has `pdo_mysql`/`pdo_pgsql` — the
+  plain `composer:2` image has neither (`config.platform` pins both
+  extensions so `composer update` resolves `yiisoft/db-mysql`/`-pgsql` there).
+- **`requireTransaction` guards inserts, not writes.** `Processor` saves
+  existing rows back as `Pending` outside any transaction — that is its normal
+  retry path — so the guard has to tell a `record()` from a re-save, and it
+  does so with an `EXISTS` query. Guarding every `save()` would break every
+  worker; guarding by "attempts === 0" would break the abort release, which
+  re-saves never-attempted rows.
+- **Console commands take `StorageInterface`, not `DbOutboxStorage`.** The
+  concrete class needs a table name the container cannot autowire, and the app
+  may decorate the interface. `outbox:purge`/`outbox:release-stale` check
+  `instanceof DbOutboxStorage` at execution and exit `INVALID` otherwise;
+  `outbox:requeue` only needs `RequeueableStorageInterface`.
 - **`claim()` stamps `claimed_at`, and `save()` clears it along with
   `claimed_by`.** Without the timestamp a claim abandoned by a killed worker is
   indistinguishable from a live one, and `findStaleClaims()`/

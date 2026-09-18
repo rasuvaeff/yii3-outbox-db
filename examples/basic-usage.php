@@ -104,4 +104,13 @@ echo '   claimReady took: ' . $ids($claimed) . "\n";
 echo '   still pending: ' . $ids($storage->findPending(types: ['order.created'])) . "\n";
 echo "   'retrying' was never claimed, so it was never written back\n\n";
 
+echo "7. Operations without SQL — stats, a requeue, a bounded purge:\n";
+$storage->markFailed($claimed[0]);
+$stats = $storage->stats();
+echo "   pending={$stats->pending} processing={$stats->processing} published={$stats->published} failed={$stats->failed}\n";
+echo '   requeued: ' . count(array_filter(array_map($storage->requeue(...), $storage->findFailed()))) . "\n";
+echo "   pending after requeue: {$storage->stats()->pending}\n";
+echo '   purged (Published, older than a day ago): ' . $storage->deleteByStatus(OutboxStatus::Published, $clock->now()->modify('-1 day')) . "\n";
+echo '   purged (Published, any age): ' . $storage->deleteByStatus(OutboxStatus::Published) . "\n";
+
 $db->close();

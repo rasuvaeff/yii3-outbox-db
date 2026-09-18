@@ -27,6 +27,9 @@
     //  - DbOutboxStorage::claim (:76, :77, :87, :90 x2, :100) are pre-existing,
     //    unrelated to this exception's attribution gap — untouched by this
     //    change (identical before/after), out of scope here.
+    //  - Console\Age::parse CastInt (`(int) $matches['count']` → the string):
+    //    equivalent — the regex admits digits only, and `'15' * 60` is the
+    //    same int under strict_types, so no input can tell the two apart.
     "minMsi": 93,
     "mutators": {
         "@default": true

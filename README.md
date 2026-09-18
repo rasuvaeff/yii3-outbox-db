@@ -17,8 +17,10 @@ or export them asynchronously — surviving process restarts and downstream outa
 ## Requirements
 
 - PHP 8.3+
-- `rasuvaeff/yii3-outbox` ^1.6
-- `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.0
+- `rasuvaeff/yii3-outbox` ^1.7
+- `yiisoft/db` ^2.0, `yiisoft/db-migration` ^2.1 (2.1.0 is where
+  `setSourceNamespaces()` finds a vendor migration at all)
+- `symfony/console` ^6.4 || ^7.0 — for the three housekeeping commands
 
 ## Installation
 
@@ -132,6 +134,7 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | Method | Purpose |
 |---|---|
 | `save(OutboxMessage)` | upsert by `id` (initial record or retry re-save) |
+| `saveBatch(list<OutboxMessage>)` | one multi-row `INSERT` (`BatchSavingStorageInterface`); what `Outbox::recordMany()` calls. New rows only — a duplicate id is the database's error |
 | `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | same claim, minus the rows still waiting out their backoff. What `Processor` calls |
 | `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `created_at` ASC |
@@ -139,7 +142,10 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 | `markPublishedBatch(list<OutboxMessage>)` | the same for a whole batch in one statement (`BatchAcknowledgingStorageInterface`); what `yii3-outbox-clickhouse` calls |
 | `markFailed(OutboxMessage)` | re-save with `Failed` status |
 | `getById(string $id)` | single message or `null` |
-| `deleteByStatus(OutboxStatus)` | housekeeping (e.g. purge `Published`); unnecessary with `deletePublished: true` |
+| `findFailed(array $types = [], int $limit = 1000)` | `Failed` rows, `created_at` ASC (`RequeueableStorageInterface`) |
+| `requeue(OutboxMessage)` | one `UPDATE ... WHERE id = ? AND status = 'failed'`: back to `Pending`, attempts and claim cleared. `false` when the row is no longer `Failed` |
+| `stats()` | one `GROUP BY status` query → `OutboxStats` (`StatsAwareStorageInterface`) |
+| `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)` | housekeeping (e.g. purge `Published`), optionally only rows created before `$olderThan`; unnecessary with `deletePublished: true` |
 | `findStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | rows still `Processing` whose claim is older than the threshold |
 | `releaseStaleClaims(DateTimeImmutable $claimedBefore, int $limit = 1000)` | puts those rows back to `Pending`; returns how many |
 
@@ -178,8 +184,6 @@ Two things change for an operator:
   want to know how many are backing off.
 - A message that has spent its attempts is marked `Failed` up to
   `delaySeconds` later than before, since it waits for a batch that includes it.
-
-Requires `rasuvaeff/yii3-outbox` ^1.5.
 
 #### `claim()` vs `findPending()`
 
@@ -223,6 +227,50 @@ always clears `claimed_by` along with `claimed_at`. Neither row is held by a
 live claim, which is exactly what the missing `claimed_by` says.
 
 A growing `Processing` count still deserves an alert; now it also has a cure.
+`stats()` is how to read it without SQL:
+
+```php
+$stats = $storage->stats();           // one GROUP BY query
+$stats->processing;                   // what the alert watches
+$stats->failed;                       // what the other alert watches
+$stats->oldestPendingAgeSeconds($clock->now());   // how far behind the worker is
+```
+
+#### Console commands
+
+Three housekeeping commands — `Console\PurgeOutboxCommand`,
+`Console\ReleaseStaleOutboxClaimsCommand`, `Console\RequeueFailedOutboxCommand`
+— are registered for `yiisoft/yii-console` (they work in any Symfony Console
+application; the container needs a `StorageInterface` bound to
+`DbOutboxStorage`, which `config/di.php` does):
+
+```bash
+./yii outbox:release-stale --claimed-before=15m        # the cron above; default 15m, --limit=1000
+./yii outbox:purge --older-than=7d                     # Published rows created more than 7 days ago
+./yii outbox:purge --status=failed --older-than=30d    # or Failed ones; Pending/Processing are never purged
+./yii outbox:requeue --type=order.created --limit=500  # Failed -> Pending with attempts reset; all types by default
+```
+
+Ages are `<count><unit>` with `s`, `m`, `h` or `d`; a malformed age or limit
+exits `Command::INVALID` without touching a row. Without `--older-than`,
+`outbox:purge` deletes every row in the status — the pre-2.4 behaviour.
+
+#### Guarding the transaction in development
+
+The outbox pattern only holds when `record()` runs inside the business
+transaction, and nothing can enforce that in production without a cost. In
+development and CI the cost is fine:
+
+```php
+new DbOutboxStorage(db: $connection, requireTransaction: true);
+// or params: 'require_transaction' => true
+```
+
+A `save()` that would create a new row — what `record()` does — then throws
+`Exception\OutboxWriteOutsideTransactionException` unless a transaction is
+open on the connection; `saveBatch()` (behind `recordMany()`) likewise. A
+worker updating an existing row between attempts is not affected: the guard
+checks whether the row exists, which is the one extra query the mode costs.
 
 The `$types` filter lets several consumers — a generic `Processor` and a
 specialized exporter — share one outbox. Because `claim()` hands each message
@@ -277,12 +325,16 @@ application) is the single source of `StorageInterface`. Set the table name in
 params:
 
 ```php
-// config/params.php
+// config/common/params.php
 'rasuvaeff/yii3-outbox-db' => [
     'table' => 'outbox',
-    'delete_published' => false,   // true: acknowledged rows are deleted, no purge cron needed
+    'delete_published' => false,    // true: acknowledged rows are deleted, no purge cron needed
+    'require_transaction' => false, // true in dev/CI: record() outside a transaction throws
 ],
 ```
+
+The same file registers `outbox:purge`, `outbox:release-stale` and
+`outbox:requeue` under `yiisoft/yii-console`.
 
 ## Security
 

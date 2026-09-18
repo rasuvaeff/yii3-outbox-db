@@ -8,6 +8,7 @@ use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Exception\InvalidOutboxRowException;
+use Rasuvaeff\Yii3OutboxDb\Exception\OutboxWriteOutsideTransactionException;
 use Rasuvaeff\Yii3OutboxDb\Tests\Support\CountingProfiler;
 use Testo\Assert;
 use Testo\Codecov\Covers;
@@ -427,6 +428,310 @@ final class SqliteIntegrationTest
         Assert::notNull($storage->getById('m2'));
     }
 
+    public function deleteByStatusWithOlderThanKeepsTheRecentRows(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'old', type: 'ab.exposure', createdAt: '2026-06-01 12:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'boundary', type: 'ab.exposure', createdAt: '2026-06-04 12:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'recent', type: 'ab.exposure', createdAt: '2026-06-10 12:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'old-pending', type: 'ab.exposure', createdAt: '2026-06-01 12:00:00'));
+
+        $deleted = $storage->deleteByStatus(OutboxStatus::Published, new \DateTimeImmutable('2026-06-04 12:00:00'));
+
+        Assert::same($deleted, 1);
+        Assert::null($storage->getById('old'));
+        // created exactly at the threshold is not "older than" it
+        Assert::notNull($storage->getById('boundary'));
+        Assert::notNull($storage->getById('recent'));
+        Assert::notNull($storage->getById('old-pending'));
+    }
+
+    // --- saveBatch ----------------------------------------------------------
+
+    public function saveBatchInsertsEveryRowInOneStatement(): void
+    {
+        $storage = $this->createStorage();
+        // a first write loads the table schema; only the batch is counted
+        $storage->save($this->pending(id: 'warm-up', type: 'ab.exposure', createdAt: '2026-06-11 11:00:00'));
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        $storage->saveBatch([
+            $this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'),
+            $this->attempted(id: 'b', attempts: 2, lastAttemptAt: '2026-06-11 12:05:00')->withStatus(OutboxStatus::Failed),
+        ]);
+
+        Assert::same($profiler->statements, 1);
+        $a = $storage->getById('a');
+        $b = $storage->getById('b');
+        Assert::notNull($a);
+        Assert::notNull($b);
+        Assert::same($a->getStatus(), OutboxStatus::Pending);
+        Assert::same($b->getStatus(), OutboxStatus::Failed);
+        Assert::same($b->getAttempts(), 2);
+        Assert::same($b->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-11 12:05:00');
+    }
+
+    public function saveBatchWithEmptyListTouchesNothing(): void
+    {
+        $storage = $this->createStorage();
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        $storage->saveBatch([]);
+
+        Assert::same($profiler->statements, 0);
+        Assert::count(iterator_to_array($this->allRows()), 0);
+    }
+
+    public function saveBatchDoesNotUpsertADuplicateId(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        Expect::exception(\Throwable::class);
+
+        $storage->saveBatch([$this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00')]);
+    }
+
+    // --- requeue ------------------------------------------------------------
+
+    public function findFailedReturnsFailedRowsOldestFirstFilteredAndLimited(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'f2', type: 'ab.exposure', createdAt: '2026-06-11 12:02:00')->withStatus(OutboxStatus::Failed));
+        $storage->save($this->pending(id: 'f1', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00')->withStatus(OutboxStatus::Failed));
+        $storage->save($this->pending(id: 'f3', type: 'ab.conversion', createdAt: '2026-06-11 12:03:00')->withStatus(OutboxStatus::Failed));
+        $storage->save($this->pending(id: 'p', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        $ids = static fn(array $messages): array => array_map(static fn(OutboxMessage $m): string => $m->getId(), $messages);
+
+        Assert::same($ids($storage->findFailed()), ['f1', 'f2', 'f3']);
+        Assert::same($ids($storage->findFailed(types: ['ab.exposure'])), ['f1', 'f2']);
+        Assert::same($ids($storage->findFailed(limit: 2)), ['f1', 'f2']);
+        Assert::same($ids($storage->findFailed(types: ['nope'])), []);
+    }
+
+    public function requeueMovesAFailedRowBackToPendingWithAttemptsReset(): void
+    {
+        $storage = $this->createStorage(now: '2026-06-11 12:10:00');
+        $storage->save($this->attempted(id: 'f', attempts: 3, lastAttemptAt: '2026-06-11 12:05:00')->withStatus(OutboxStatus::Failed));
+
+        Assert::true($storage->requeue($storage->getById('f') ?? throw new \RuntimeException('missing')));
+
+        $row = iterator_to_array($this->allRows())[0];
+        Assert::same($row['status'], 'pending');
+        Assert::same((int) $row['attempts'], 0);
+        Assert::null($row['last_attempt_at']);
+        Assert::null($row['claimed_by']);
+        Assert::null($row['claimed_at']);
+        Assert::same($row['created_at'], '2026-06-11 12:00:00');
+        // and it is claimable again as if never attempted
+        Assert::count($storage->claimReady(new \DateTimeImmutable('2026-06-11 12:00:00'), 3), 1);
+    }
+
+    #[DataProvider('nonFailedStatusProvider')]
+    public function requeueLeavesANonFailedRowAloneWhateverTheSnapshotSays(OutboxStatus $status): void
+    {
+        $storage = $this->createStorage();
+        $stale = $this->attempted(id: 'm', attempts: 2, lastAttemptAt: '2026-06-11 12:05:00')->withStatus(OutboxStatus::Failed);
+        // the row's current status decides, not the caller's snapshot
+        $storage->save($stale->withStatus($status));
+
+        Assert::false($storage->requeue($stale));
+
+        $row = iterator_to_array($this->allRows())[0];
+        Assert::same($row['status'], $status->value);
+        Assert::same((int) $row['attempts'], 2);
+    }
+
+    public static function nonFailedStatusProvider(): iterable
+    {
+        yield 'pending' => [OutboxStatus::Pending];
+        yield 'processing' => [OutboxStatus::Processing];
+        yield 'published' => [OutboxStatus::Published];
+    }
+
+    public function requeueTouchesOnlyTheGivenRow(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'f1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00')->withStatus(OutboxStatus::Failed));
+        $storage->save($this->pending(id: 'f2', type: 'ab.exposure', createdAt: '2026-06-11 12:01:00')->withStatus(OutboxStatus::Failed));
+
+        Assert::true($storage->requeue($storage->getById('f1') ?? throw new \RuntimeException('missing')));
+
+        Assert::same($storage->getById('f1')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($storage->getById('f2')?->getStatus(), OutboxStatus::Failed);
+    }
+
+    public function requeueOfAnUnknownRowIsFalse(): void
+    {
+        $storage = $this->createStorage();
+
+        Assert::false($storage->requeue($this->pending(id: 'ghost', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00')));
+    }
+
+    // --- stats --------------------------------------------------------------
+
+    public function statsOfAnEmptyTableAreAllZero(): void
+    {
+        $stats = $this->createStorage()->stats();
+
+        Assert::same([$stats->pending, $stats->processing, $stats->published, $stats->failed], [0, 0, 0, 0]);
+        Assert::null($stats->oldestPendingCreatedAt);
+    }
+
+    public function statsCountEveryStatusAndReportTheOldestPending(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'p-new', type: 'ab.exposure', createdAt: '2026-06-11 12:30:00'));
+        $storage->save($this->pending(id: 'p-old', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        $storage->save($this->pending(id: 'x', type: 'ab.exposure', createdAt: '2026-06-11 11:00:00')->withStatus(OutboxStatus::Processing));
+        $storage->save($this->pending(id: 'pub1', type: 'ab.exposure', createdAt: '2026-06-11 10:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'pub2', type: 'ab.exposure', createdAt: '2026-06-11 10:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'pub3', type: 'ab.exposure', createdAt: '2026-06-11 10:00:00')->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'f', type: 'ab.exposure', createdAt: '2026-06-11 09:00:00')->withStatus(OutboxStatus::Failed));
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        $stats = $storage->stats();
+
+        Assert::same($profiler->statements, 1);
+        Assert::same($stats->pending, 2);
+        Assert::same($stats->processing, 1);
+        Assert::same($stats->published, 3);
+        Assert::same($stats->failed, 1);
+        Assert::same($stats->total(), 7);
+        // the oldest *pending* row, not the oldest row
+        Assert::same($stats->oldestPendingCreatedAt?->format('Y-m-d H:i:s'), '2026-06-11 12:00:00');
+    }
+
+    public function statsWithoutPendingRowsHaveNoOldestPending(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'f', type: 'ab.exposure', createdAt: '2026-06-11 09:00:00')->withStatus(OutboxStatus::Failed));
+
+        $stats = $storage->stats();
+
+        Assert::same($stats->failed, 1);
+        Assert::null($stats->oldestPendingCreatedAt);
+    }
+
+    // --- requireTransaction -------------------------------------------------
+
+    public function requireTransactionRejectsANewRowOutsideATransaction(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+
+        Expect::exception(OutboxWriteOutsideTransactionException::class)
+            ->withMessageContaining('Outbox message "m1" is being recorded outside a transaction');
+
+        $storage->save($this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+    }
+
+    public function requireTransactionRejectsANewRowEvenWhenOtherRowsExist(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+        $this->db->transaction(function () use ($storage): void {
+            $storage->save($this->pending(id: 'existing', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+        });
+
+        Expect::exception(OutboxWriteOutsideTransactionException::class);
+
+        // the existence check is per id, not "is the table empty"
+        $storage->save($this->pending(id: 'new', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+    }
+
+    public function requireTransactionLetsAnEmptyBatchThroughOutsideATransaction(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+
+        $storage->saveBatch([]);
+
+        Assert::count(iterator_to_array($this->allRows()), 0);
+    }
+
+    public function requireTransactionAcceptsANewRowInsideATransaction(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+        $message = $this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+
+        $this->db->transaction(function () use ($storage, $message): void {
+            $storage->save($message);
+            $storage->saveBatch([$this->pending(id: 'm2', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00')]);
+        });
+
+        Assert::notNull($storage->getById('m1'));
+        Assert::notNull($storage->getById('m2'));
+    }
+
+    public function requireTransactionAcceptsAnInsideWriteThatUpdatesTheSameRow(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+        $message = $this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+
+        $this->db->transaction(static function () use ($storage, $message): void {
+            $storage->save($message);
+        });
+
+        Assert::same($storage->getById('m1')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    public function requireTransactionLetsAWorkerUpdateAnExistingRowOutsideATransaction(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+        $message = $this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+        $this->db->transaction(static function () use ($storage, $message): void {
+            $storage->save($message);
+        });
+
+        // What Processor does between attempts: no transaction, existing row.
+        $storage->save($message->withAttempt(new \DateTimeImmutable('2026-06-11 12:05:00')));
+        $storage->markFailed($message);
+
+        Assert::same($storage->getById('m1')?->getStatus(), OutboxStatus::Failed);
+    }
+
+    public function requireTransactionRejectsABatchOutsideATransaction(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+
+        Expect::exception(OutboxWriteOutsideTransactionException::class)
+            ->withMessageContaining('2 outbox messages are being recorded outside a transaction');
+
+        $storage->saveBatch([
+            $this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'),
+            $this->pending(id: 'b', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'),
+        ]);
+    }
+
+    public function requireTransactionIsOffByDefaultAndCostsNoExtraQuery(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'warm-up', type: 'ab.exposure', createdAt: '2026-06-11 11:00:00'));
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        $storage->save($this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        Assert::same($profiler->statements, 1);
+    }
+
+    public function requireTransactionCostsOneExistenceCheckPerOutsideSave(): void
+    {
+        $storage = $this->createStorage(requireTransaction: true);
+        $message = $this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00');
+        $this->db->transaction(static function () use ($storage, $message): void {
+            $storage->save($message);
+        });
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        $storage->save($message->withStatus(OutboxStatus::Pending));
+
+        Assert::same($profiler->statements, 2);
+    }
+
     public function usesCustomTableName(): void
     {
         $this->createTable(name: 'custom_outbox');
@@ -699,12 +1004,13 @@ final class SqliteIntegrationTest
         Assert::same($row['claimed_at'], '2026-06-11 12:05:00');
     }
 
-    private function createStorage(?string $now = null, bool $deletePublished = false): DbOutboxStorage
+    private function createStorage(?string $now = null, bool $deletePublished = false, bool $requireTransaction = false): DbOutboxStorage
     {
         return new DbOutboxStorage(
             db: $this->db,
             clock: $now === null ? null : new StaticClock(new \DateTimeImmutable($now)),
             deletePublished: $deletePublished,
+            requireTransaction: $requireTransaction,
         );
     }
 

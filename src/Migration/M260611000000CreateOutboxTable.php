@@ -31,7 +31,7 @@ use Yiisoft\Db\Migration\TransactionalMigrationInterface;
 final readonly class M260611000000CreateOutboxTable implements RevertibleMigrationInterface, TransactionalMigrationInterface
 {
     public function __construct(
-        private readonly OutboxTableName $table = new OutboxTableName(),
+        private OutboxTableName $table = new OutboxTableName(),
     ) {}
 
     #[\Override]
