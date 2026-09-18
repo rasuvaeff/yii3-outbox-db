@@ -19,6 +19,7 @@ use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 use Yiisoft\Db\Cache\SchemaCache;
 use Yiisoft\Db\Connection\ConnectionInterface;
+use Yiisoft\Db\Exception\NotSupportedException;
 use Yiisoft\Db\Sqlite\Connection as SqliteConnection;
 use Yiisoft\Db\Sqlite\Driver as SqliteDriver;
 use Yiisoft\Test\Support\Clock\StaticClock;
@@ -617,6 +618,29 @@ final class SqliteIntegrationTest
         Assert::null($stats->oldestPendingCreatedAt);
     }
 
+    // --- skipLocked ---------------------------------------------------------
+
+    public function skipLockedIsRejectedBySqliteAtClaimTime(): void
+    {
+        $storage = $this->createStorage(skipLocked: true);
+        $storage->save($this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        // SQLite has no FOR clause; the flag is for MySQL/PostgreSQL. The
+        // claim fails loudly instead of silently ignoring the option.
+        Expect::exception(NotSupportedException::class);
+
+        $storage->claim();
+    }
+
+    public function skipLockedLeavesSavesAndReadsUntouched(): void
+    {
+        $storage = $this->createStorage(skipLocked: true);
+        $storage->save($this->pending(id: 'm1', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        Assert::count($storage->findPending(), 1);
+        Assert::same($storage->getById('m1')?->getStatus(), OutboxStatus::Pending);
+    }
+
     // --- requireTransaction -------------------------------------------------
 
     public function requireTransactionRejectsANewRowOutsideATransaction(): void
@@ -1004,13 +1028,18 @@ final class SqliteIntegrationTest
         Assert::same($row['claimed_at'], '2026-06-11 12:05:00');
     }
 
-    private function createStorage(?string $now = null, bool $deletePublished = false, bool $requireTransaction = false): DbOutboxStorage
-    {
+    private function createStorage(
+        ?string $now = null,
+        bool $deletePublished = false,
+        bool $requireTransaction = false,
+        bool $skipLocked = false,
+    ): DbOutboxStorage {
         return new DbOutboxStorage(
             db: $this->db,
             clock: $now === null ? null : new StaticClock(new \DateTimeImmutable($now)),
             deletePublished: $deletePublished,
             requireTransaction: $requireTransaction,
+            skipLocked: $skipLocked,
         );
     }
 

@@ -201,6 +201,23 @@ Every claimed message must reach a terminal state: `markPublished()`,
 `markFailed()`, or `save($message->withStatus(OutboxStatus::Pending))` to
 release it.
 
+**Several workers on MySQL or PostgreSQL: `skipLocked: true`.** The token
+scheme is correct with any number of workers, but their claims serialise on
+row locks: a worker whose candidate rows overlap with another's waits for that
+transaction to finish (on MySQL up to `innodb_lock_wait_timeout`, 50 s by
+default) before it learns the rows are gone. With the flag the id select runs
+`FOR UPDATE SKIP LOCKED`, so a claim takes whatever is free at once and never
+waits on a sibling:
+
+```php
+new DbOutboxStorage(db: $connection, skipLocked: true);
+// or params: 'skip_locked' => true
+```
+
+MySQL 8+ and PostgreSQL 9.5+ only. SQLite has no `FOR` clause and rejects the
+claim with `NotSupportedException` at query time — keep the flag off in a
+SQLite-backed test environment.
+
 #### Recovering stale claims
 
 A worker killed between `claim()` and the finalising write — SIGKILL under
@@ -330,6 +347,7 @@ params:
     'table' => 'outbox',
     'delete_published' => false,    // true: acknowledged rows are deleted, no purge cron needed
     'require_transaction' => false, // true in dev/CI: record() outside a transaction throws
+    'skip_locked' => false,         // true on MySQL 8+/PostgreSQL 9.5+ with several workers
 ],
 ```
 

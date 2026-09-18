@@ -20,6 +20,7 @@ use Yiisoft\Db\Mysql\Connection as MysqlConnection;
 use Yiisoft\Db\Mysql\Driver as MysqlDriver;
 use Yiisoft\Db\Pgsql\Connection as PgsqlConnection;
 use Yiisoft\Db\Pgsql\Driver as PgsqlDriver;
+use Yiisoft\Db\Query\Query;
 use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
 
 /**
@@ -99,6 +100,8 @@ final class CrossDatabaseMigrationTest
             // retention with a threshold
             Assert::same($storage->deleteByStatus(OutboxStatus::Published, new \DateTimeImmutable('2026-06-11 12:00:30')), 1);
 
+            $this->skipLockedClaimsAroundAConcurrentLock($database, $db);
+
             $addClaimedAt->down($builder);
             Assert::null($db->getTableSchema('outbox', true)?->getColumn('claimed_at'));
 
@@ -108,6 +111,47 @@ final class CrossDatabaseMigrationTest
             $db->createCommand('DROP TABLE IF EXISTS outbox')->execute();
             $db->close();
         }
+    }
+
+    /**
+     * With `skipLocked: true` a claim does not wait for rows another
+     * transaction holds locked: a second connection locks one pending row
+     * with `FOR UPDATE`, and the claim takes the others at once rather than
+     * blocking on it (MySQL would wait `innodb_lock_wait_timeout`, 50 s by
+     * default). Once the lock is gone the skipped row is claimed normally.
+     */
+    private function skipLockedClaimsAroundAConcurrentLock(string $database, ConnectionInterface $db): void
+    {
+        $db->createCommand()->delete('outbox')->execute();
+        $storage = new DbOutboxStorage(db: $db, skipLocked: true);
+        $storage->saveBatch([
+            $this->message('locked', '2026-06-11 12:00:00'),
+            $this->message('free-1', '2026-06-11 12:01:00'),
+            $this->message('free-2', '2026-06-11 12:02:00'),
+        ]);
+
+        $other = $this->connection($database);
+        $other->open();
+        $lock = $other->beginTransaction();
+
+        try {
+            $held = (new Query($other))->select('id')->from('outbox')->where(['id' => 'locked'])->for('UPDATE')->column();
+            Assert::same($held, ['locked']);
+
+            $started = microtime(as_float: true);
+            $claimed = $storage->claim(limit: 10);
+            $elapsed = microtime(as_float: true) - $started;
+
+            Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['free-1', 'free-2']);
+            Assert::true($elapsed < 5.0, sprintf('claim waited %.1fs on a locked row instead of skipping it', $elapsed));
+            Assert::same($storage->getById('locked')?->getStatus(), OutboxStatus::Pending);
+        } finally {
+            $lock->rollBack();
+            $other->close();
+        }
+
+        $afterUnlock = $storage->claim(limit: 10);
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $afterUnlock), ['locked']);
     }
 
     private function message(string $id, string $createdAt): OutboxMessage
