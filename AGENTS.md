@@ -63,6 +63,14 @@ make release-check
 
 ## Invariants & gotchas
 
+- **Order is `priority DESC, created_at ASC` everywhere a list leaves the
+  storage** (2.6): `findByStatus()`, `claimWhere()`, the `claimed_by` re-fetch
+  and `staleQuery()`. The re-fetch matters — it sets the order of the batch a
+  worker receives. `idx_<table>_priority` is declared `[[priority]] DESC`
+  (`Quoter::quoteColumnName()` would quote `'priority DESC'` as one
+  identifier); keep the direction, an ascending index brings the full-backlog
+  filesort back. `toColumns()` always writes `priority`, so the migration is
+  mandatory before the code.
 - **The table name is a VO, not a string, because `Injector` cannot resolve a
   scalar.** `yiisoft/db-migration` builds migrations via `Injector::make()`,
   which resolves arguments by name or by type from the container and never reads

@@ -1011,6 +1011,89 @@ final class SqliteIntegrationTest
         );
     }
 
+    // --- priority -------------------------------------------------------------
+
+    public function claimHandsOutHigherPriorityFirstThenOldest(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'bulk-old', type: 'http.exchange', createdAt: '2026-10-03 10:00:00'));
+        $storage->save($this->pending(id: 'urgent-new', type: 'audit.entry', createdAt: '2026-10-03 10:00:02', priority: 10));
+        $storage->save($this->pending(id: 'urgent-old', type: 'audit.entry', createdAt: '2026-10-03 10:00:01', priority: 10));
+        $storage->save($this->pending(id: 'snapshot', type: 'creator.metrics_snapshot', createdAt: '2026-10-03 10:00:03', priority: 5));
+        $storage->save($this->pending(id: 'bulk-new', type: 'http.exchange', createdAt: '2026-10-03 10:00:04'));
+
+        $claimed = $storage->claim(limit: 4);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['urgent-old', 'urgent-new', 'snapshot', 'bulk-old']);
+        Assert::same(array_map(static fn(OutboxMessage $m): int => $m->getPriority(), $claimed), [10, 10, 5, 0]);
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $storage->findPending()), ['bulk-new']);
+    }
+
+    public function claimSelectsByPriorityWhenTheBulkBacklogExceedsTheLimit(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'bulk-1', type: 'http.exchange', createdAt: '2026-10-03 10:00:00'));
+        $storage->save($this->pending(id: 'bulk-2', type: 'http.exchange', createdAt: '2026-10-03 10:00:01'));
+        $storage->save($this->pending(id: 'bulk-3', type: 'http.exchange', createdAt: '2026-10-03 10:00:02'));
+        $storage->save($this->pending(id: 'urgent', type: 'audit.entry', createdAt: '2026-10-03 10:00:09', priority: 10));
+
+        $claimed = $storage->claim(limit: 2);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['urgent', 'bulk-1'], 'the newest message jumps the older bulk backlog');
+    }
+
+    public function staleClaimsAreListedByPriorityThenOldest(): void
+    {
+        $storage = $this->createStorage(now: '2026-10-03 10:10:00');
+        $storage->save($this->pending(id: 'bulk', type: 'http.exchange', createdAt: '2026-10-03 10:00:00'));
+        $storage->save($this->pending(id: 'urgent', type: 'audit.entry', createdAt: '2026-10-03 10:00:05', priority: 10));
+        $storage->claim();
+
+        $stale = $storage->findStaleClaims(new \DateTimeImmutable('2026-10-03 11:00:00'));
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $stale), ['urgent', 'bulk']);
+    }
+
+    public function claimReadyKeepsBackoffAndOrdersTheEligibleByPriority(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'bulk', type: 'http.exchange', createdAt: '2026-10-03 10:00:00'));
+        $storage->save(
+            $this->pending(id: 'urgent-in-backoff', type: 'audit.entry', createdAt: '2026-10-03 10:00:00', priority: 10)
+                ->withAttempt(new \DateTimeImmutable('2026-10-03 10:05:00')),
+        );
+        $storage->save($this->pending(id: 'urgent', type: 'audit.entry', createdAt: '2026-10-03 10:00:01', priority: 5));
+
+        $claimed = $storage->claimReady(new \DateTimeImmutable('2026-10-03 10:01:00'), 3);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['urgent', 'bulk']);
+    }
+
+    public function priorityIsStoredBySaveAndSaveBatchAndListedFirst(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'single', type: 'audit.entry', createdAt: '2026-10-03 10:00:05', priority: -3));
+        $storage->saveBatch([
+            $this->pending(id: 'batch-low', type: 'http.exchange', createdAt: '2026-10-03 10:00:00'),
+            $this->pending(id: 'batch-high', type: 'audit.entry', createdAt: '2026-10-03 10:00:09', priority: 32767),
+        ]);
+
+        Assert::same($storage->getById('single')?->getPriority(), -3);
+        Assert::same($storage->getById('batch-high')?->getPriority(), 32767);
+        Assert::same(
+            array_map(static fn(OutboxMessage $m): string => $m->getId(), $storage->findPending()),
+            ['batch-high', 'batch-low', 'single'],
+        );
+
+        foreach (['single', 'batch-low', 'batch-high'] as $id) {
+            $storage->markFailed($storage->getById($id) ?? throw new \RuntimeException($id));
+        }
+        Assert::same(
+            array_map(static fn(OutboxMessage $m): string => $m->getId(), $storage->findFailed()),
+            ['batch-high', 'batch-low', 'single'],
+        );
+    }
+
     public function claimReadyStampsClaimedByAndClaimedAt(): void
     {
         $storage = $this->createStorage(now: '2026-06-11 12:05:00');
@@ -1043,7 +1126,7 @@ final class SqliteIntegrationTest
         );
     }
 
-    private function pending(string $id, string $type, string $createdAt): OutboxMessage
+    private function pending(string $id, string $type, string $createdAt, int $priority = 0): OutboxMessage
     {
         return new OutboxMessage(
             id: $id,
@@ -1051,6 +1134,7 @@ final class SqliteIntegrationTest
             payload: '{}',
             status: OutboxStatus::Pending,
             createdAt: new \DateTimeImmutable($createdAt),
+            priority: $priority,
         );
     }
 
@@ -1083,6 +1167,7 @@ final class SqliteIntegrationTest
                 attempts        INTEGER      NOT NULL DEFAULT 0,
                 last_attempt_at VARCHAR(30),
                 aggregate_id    VARCHAR(255),
+                priority        SMALLINT     NOT NULL DEFAULT 0,
                 claimed_by      VARCHAR(64),
                 claimed_at      VARCHAR(30)
             )

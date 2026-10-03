@@ -178,6 +178,31 @@ final class OutboxRowMapperTest
         Assert::same($message->getAttempts(), 3);
     }
 
+    public function rowWithoutPriorityColumnMapsToZero(): void
+    {
+        Assert::same($this->mapper->map($this->validRow())->getPriority(), 0);
+    }
+
+    public function parsesPriorityFromIntAndNumericString(): void
+    {
+        Assert::same($this->mapper->map($this->validRow(['priority' => 10]))->getPriority(), 10);
+        Assert::same($this->mapper->map($this->validRow(['priority' => '-5']))->getPriority(), -5);
+    }
+
+    public function throwsOnNonNumericPriority(): void
+    {
+        Expect::exception(InvalidOutboxRowException::class);
+
+        $this->mapper->map($this->validRow(['priority' => 'high']));
+    }
+
+    public function throwsOnPriorityOutsideTheSmallintRange(): void
+    {
+        Expect::exception(InvalidOutboxRowException::class)->withMessageContaining('Priority must be between');
+
+        $this->mapper->map($this->validRow(['priority' => 40000]));
+    }
+
     public function throwsOnInvalidStatus(): void
     {
         try {

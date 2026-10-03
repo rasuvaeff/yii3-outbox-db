@@ -79,9 +79,27 @@ PostgreSQL — там имена индексов уникальны в пред
 |---|---|
 | `M260611000000CreateOutboxTable` | создаёт таблицу и индекс для pending-выборки |
 | `M260820000000AddOutboxClaimedAt` | добавляет `claimed_at` и индекс для processing-выборки — для восстановления зависших claim'ов |
+| `M261003000000AddOutboxPriority` | добавляет `priority` (`SMALLINT NOT NULL DEFAULT 0`) и индекс `(status, priority DESC, created_at)`, по которому идёт claim |
 
-`M260820000000AddOutboxClaimedAt::down()` работает только на MySQL и
-PostgreSQL — `yiisoft/db-sqlite` не умеет удалять колонку.
+`down()` у `M260820000000AddOutboxClaimedAt` и `M261003000000AddOutboxPriority`
+работает только на MySQL и PostgreSQL — `yiisoft/db-sqlite` не умеет удалять
+колонку.
+
+#### Приоритет сообщений
+
+Все выборки и claim упорядочены `priority DESC, created_at ASC`
+(`rasuvaeff/yii3-outbox` 1.8: `Outbox::record(..., priority: 10)`). Равные
+приоритеты сохраняют порядок по времени, так что установка без приоритетов
+изменений не видит. `idx_<table>_priority` объявлен с `priority DESC` — claim
+идёт по pending-строкам сразу в нужном порядке и останавливается на лимите: на
+MariaDB 12.2 со 100 тыс. pending-строк `EXPLAIN` показывает filesort всего
+бэклога с возрастающим индексом `(status, priority, created_at)` и без него — с
+этим. `DESC` в индексе учитывают MySQL 8+, MariaDB 10.8+, PostgreSQL и SQLite;
+старые MySQL/MariaDB его принимают и сортируют как раньше.
+
+Порядок строгий — старения нет, поэтому приоритет выше 0 — только малообъёмным
+типам. Миграция **обязательна** до выкатки кода: каждая вставка пишет
+`priority` (см. UPGRADE.md).
 
 #### Размер payload
 
@@ -137,14 +155,14 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 |---|---|
 | `save(OutboxMessage)` | upsert по `id` (первичная запись или пересохранение при retry) |
 | `saveBatch(list<OutboxMessage>)` | один multi-row `INSERT` (`BatchSavingStorageInterface`); это вызывает `Outbox::recordMany()`. Только новые строки — дубль id отвергает база |
-| `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `created_at` ASC |
+| `claim(array $types = [], int $limit = 1000)` | **то, что вызывает воркер.** Атомарно переводит до `limit` строк из `Pending` в `Processing` и возвращает их, сортировка `priority` DESC, затем `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | тот же захват без строк, ещё ждущих окончания backoff. Именно это вызывает `Processor` |
-| `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `created_at` ASC |
+| `findPending(array $types = [], int $limit = 1000)` | read-only список строк в статусе `Pending`, с необязательным фильтром по типу, сортировка `priority` DESC, затем `created_at` ASC |
 | `markPublished(OutboxMessage)` | пересохранить со статусом `Published` — или удалить строку при `deletePublished: true` |
 | `markPublishedBatch(list<OutboxMessage>)` | то же для целого батча одним statement'ом (`BatchAcknowledgingStorageInterface`); это вызывает `yii3-outbox-clickhouse` |
 | `markFailed(OutboxMessage)` | пересохранить со статусом `Failed` |
 | `getById(string $id)` | одно сообщение или `null` |
-| `findFailed(array $types = [], int $limit = 1000)` | строки `Failed`, `created_at` ASC (`RequeueableStorageInterface`) |
+| `findFailed(array $types = [], int $limit = 1000)` | строки `Failed`, `priority` DESC, затем `created_at` ASC (`RequeueableStorageInterface`) |
 | `requeue(OutboxMessage)` | один `UPDATE ... WHERE id = ? AND status = 'failed'`: обратно в `Pending`, попытки и claim сброшены. `false`, если строка уже не `Failed` |
 | `stats()` | один запрос `GROUP BY status` → `OutboxStats` (`StatsAwareStorageInterface`) |
 | `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)` | очистка (например, удалить всё со статусом `Published`), опционально только строки, созданные до `$olderThan`; не нужна при `deletePublished: true` |
@@ -174,8 +192,8 @@ AND (attempts >= :maxAttempts
 навсегда останется `Pending`, невидимое для алерта на `Failed`.
 
 Ни миграции, ни нового индекса это не требует. `idx_<table>_pending`
-(`status`, `type`, `created_at`) по-прежнему сужает скан и обслуживает
-сортировку; добавленная дизъюнкция — это `OR` по двум колонкам, который целиком
+(`status`, `type`, `created_at`) по-прежнему сужает скан (с 2.6 сортировку
+обслуживает `idx_<table>_priority`, см. [Приоритет сообщений](#приоритет-сообщений)); добавленная дизъюнкция — это `OR` по двум колонкам, который целиком
 не покрывается ни одним индексом, и вычисляется он на строках, уже отобранных
 существующим индексом.
 

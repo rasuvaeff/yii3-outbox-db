@@ -8,6 +8,7 @@ use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt;
+use Rasuvaeff\Yii3OutboxDb\Migration\M261003000000AddOutboxPriority;
 use Rasuvaeff\Yii3OutboxDb\OutboxTableName;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
@@ -103,10 +104,36 @@ final class MigrationTest
         Assert::notNull($schema->getColumn('claimed_at'));
     }
 
+    public function addsThePriorityColumnWithDefaultZeroAndTheDescendingIndex(): void
+    {
+        (new M260611000000CreateOutboxTable())->up($this->builder);
+        (new M260820000000AddOutboxClaimedAt())->up($this->builder);
+        $this->db->createCommand(sql: "INSERT INTO outbox (id, type, payload, status, created_at, attempts) VALUES ('legacy', 't', '{}', 'pending', '2026-10-03 10:00:00', 0)")->execute();
+
+        (new M261003000000AddOutboxPriority())->up($this->builder);
+
+        Assert::notNull($this->db->getTableSchema('outbox', true)?->getColumn('priority'));
+        Assert::same((new DbOutboxStorage(db: $this->db))->getById('legacy')?->getPriority(), 0, 'rows written before the migration get priority 0');
+        $indexSql = $this->db->createCommand(sql: "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_outbox_priority'")->queryScalar();
+        Assert::string($indexSql);
+        Assert::true(str_contains($indexSql, '`priority` DESC') || str_contains($indexSql, '"priority" DESC'), $indexSql);
+    }
+
+    public function addsThePriorityColumnToACustomlyNamedTable(): void
+    {
+        $table = new OutboxTableName('custom_outbox');
+        (new M260611000000CreateOutboxTable(table: $table))->up($this->builder);
+
+        (new M261003000000AddOutboxPriority(table: $table))->up($this->builder);
+
+        Assert::notNull($this->db->getTableSchema('custom_outbox', true)?->getColumn('priority'));
+    }
+
     public function migratedTableIsUsableByStorage(): void
     {
         (new M260611000000CreateOutboxTable())->up($this->builder);
         (new M260820000000AddOutboxClaimedAt())->up($this->builder);
+        (new M261003000000AddOutboxPriority())->up($this->builder);
 
         $storage = new DbOutboxStorage(db: $this->db);
 
