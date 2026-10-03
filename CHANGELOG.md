@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.6.0 — 2026-10-03
+
+### Added
+
+- Message priority (`rasuvaeff/yii3-outbox` ^1.8): migration
+  `M261003000000AddOutboxPriority` adds `priority SMALLINT NOT NULL DEFAULT 0`
+  and `idx_<table>_priority (status, priority DESC, created_at)`; every
+  insert writes the column; `claim()`, `claimReady()`, `findPending()`,
+  `findFailed()` and the stale-claim listing order by `priority DESC,
+  created_at ASC`. The descending index lets the claim stop at its limit
+  instead of sorting the backlog (`EXPLAIN` on MariaDB 12.2, 100k pending
+  rows). `OutboxRowMapper` maps a row without the column to priority 0.
+  The migration must run before the new code — see UPGRADE.md (#38).
+
 ## 2.5.0 — 2026-09-18
 
 ### Added

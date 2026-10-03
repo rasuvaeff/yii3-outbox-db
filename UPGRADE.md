@@ -1,5 +1,36 @@
 # Upgrade guide
 
+## 2.5 → 2.6
+
+Adds message priority (`rasuvaeff/yii3-outbox` ^1.8). Every insert writes the
+new `priority` column, so the schema change is **mandatory**.
+
+### Run the migration before deploying the new code
+
+```bash
+./yii migrate:up
+```
+
+`M261003000000AddOutboxPriority` adds `priority SMALLINT NOT NULL DEFAULT 0`
+and the `idx_<table>_priority (status, priority DESC, created_at)` index.
+Existing rows get priority 0 and keep their order. Workers on the previous
+version keep working against the migrated table: their inserts omit the column
+and take the default, their claims ignore it.
+
+The reverse order breaks recording: new code inserting into an unmigrated
+table fails with `no column named priority` — and since `Outbox::record()` runs
+inside your business transaction, that rolls the business write back too. So:
+
+1. deploy the migration and run it;
+2. then deploy the code.
+
+On a large table the index build takes time (MySQL/MariaDB build it online,
+PostgreSQL locks writes unless you create it `CONCURRENTLY` by hand before
+running the migration under the same name).
+
+Nothing calls for a priority: without one every message is 0 and the claim
+order is the 2.5 order.
+
 ## 2.0 → 2.1
 
 This release adds the `claimed_at` column and the API that uses it. `claim()`

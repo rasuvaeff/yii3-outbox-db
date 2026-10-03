@@ -77,9 +77,26 @@ Migrations, in order:
 |---|---|
 | `M260611000000CreateOutboxTable` | creates the table and the pending index |
 | `M260820000000AddOutboxClaimedAt` | adds `claimed_at` and the processing index, for stale-claim recovery |
+| `M261003000000AddOutboxPriority` | adds `priority` (`SMALLINT NOT NULL DEFAULT 0`) and the `(status, priority DESC, created_at)` index the claim scans |
 
-`M260820000000AddOutboxClaimedAt::down()` works on MySQL and PostgreSQL only —
-`yiisoft/db-sqlite` cannot drop a column.
+`down()` of `M260820000000AddOutboxClaimedAt` and `M261003000000AddOutboxPriority`
+works on MySQL and PostgreSQL only — `yiisoft/db-sqlite` cannot drop a column.
+
+#### Message priority
+
+Every listing and claim is ordered `priority DESC, created_at ASC`
+(`rasuvaeff/yii3-outbox` 1.8: `Outbox::record(..., priority: 10)`). Equal
+priorities keep the time order, so an installation that never sets one sees no
+change. `idx_<table>_priority` is declared with `priority DESC`, which lets the
+claim walk pending rows already in claim order and stop at its limit: on
+MariaDB 12.2 with 100k pending rows, `EXPLAIN` shows a filesort over the whole
+backlog with an ascending `(status, priority, created_at)` index and none with
+this one. MySQL 8+, MariaDB 10.8+, PostgreSQL and SQLite honour `DESC` in an
+index; older MySQL/MariaDB accept it and sort as before.
+
+The order is strict — no aging — so give a priority above 0 only to low-volume
+types. The migration is **mandatory** before deploying the code: every insert
+writes `priority` (see UPGRADE.md).
 
 #### Payload size
 
@@ -135,14 +152,14 @@ $claimed = $storage->claim(types: ['ab.exposure', 'ab.conversion'], limit: 1000)
 |---|---|
 | `save(OutboxMessage)` | upsert by `id` (initial record or retry re-save) |
 | `saveBatch(list<OutboxMessage>)` | one multi-row `INSERT` (`BatchSavingStorageInterface`); what `Outbox::recordMany()` calls. New rows only — a duplicate id is the database's error |
-| `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `created_at` ASC |
+| `claim(array $types = [], int $limit = 1000)` | **what a worker calls.** Atomically flips up to `limit` `Pending` rows to `Processing` and returns them, `priority` DESC then `created_at` ASC |
 | `claimReady(DateTimeImmutable $readyThreshold, int $maxAttempts, array $types = [], int $limit = 1000)` | same claim, minus the rows still waiting out their backoff. What `Processor` calls |
-| `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `created_at` ASC |
+| `findPending(array $types = [], int $limit = 1000)` | read-only listing of pending rows, optional type filter, `priority` DESC then `created_at` ASC |
 | `markPublished(OutboxMessage)` | re-save with `Published` status — or delete the row, with `deletePublished: true` |
 | `markPublishedBatch(list<OutboxMessage>)` | the same for a whole batch in one statement (`BatchAcknowledgingStorageInterface`); what `yii3-outbox-clickhouse` calls |
 | `markFailed(OutboxMessage)` | re-save with `Failed` status |
 | `getById(string $id)` | single message or `null` |
-| `findFailed(array $types = [], int $limit = 1000)` | `Failed` rows, `created_at` ASC (`RequeueableStorageInterface`) |
+| `findFailed(array $types = [], int $limit = 1000)` | `Failed` rows, `priority` DESC then `created_at` ASC (`RequeueableStorageInterface`) |
 | `requeue(OutboxMessage)` | one `UPDATE ... WHERE id = ? AND status = 'failed'`: back to `Pending`, attempts and claim cleared. `false` when the row is no longer `Failed` |
 | `stats()` | one `GROUP BY status` query → `OutboxStats` (`StatsAwareStorageInterface`) |
 | `deleteByStatus(OutboxStatus, ?DateTimeImmutable $olderThan = null)` | housekeeping (e.g. purge `Published`), optionally only rows created before `$olderThan`; unnecessary with `deletePublished: true` |
@@ -172,8 +189,8 @@ storage handed it — filter it out and nothing terminates it: it stays `Pending
 forever, invisible to an alert watching `Failed`.
 
 No migration and no new index come with this. `idx_<table>_pending`
-(`status`, `type`, `created_at`) still narrows the scan and serves the
-ordering; the added disjunction is an `OR` across two columns, which no index
+(`status`, `type`, `created_at`) still narrows the scan (since 2.6 the
+ordering is served by `idx_<table>_priority`, see [Message priority](#message-priority)); the added disjunction is an `OR` across two columns, which no index
 can satisfy as a whole, and it is evaluated on rows the existing index already
 selected.
 

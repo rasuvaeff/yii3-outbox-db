@@ -177,7 +177,7 @@ final readonly class DbOutboxStorage implements
         $query = (new Query($this->db))
             ->from($this->table)
             ->where(condition: ['status' => $status->value])
-            ->orderBy(['created_at' => SORT_ASC])
+            ->orderBy(['priority' => SORT_DESC, 'created_at' => SORT_ASC])
             ->limit($limit);
 
         if ($types !== []) {
@@ -294,7 +294,7 @@ final readonly class DbOutboxStorage implements
                 ->select('id')
                 ->from($this->table)
                 ->where(condition: ['status' => OutboxStatus::Pending->value])
-                ->orderBy(['created_at' => SORT_ASC])
+                ->orderBy(['priority' => SORT_DESC, 'created_at' => SORT_ASC])
                 ->limit($limit);
 
             if ($types !== []) {
@@ -333,7 +333,7 @@ final readonly class DbOutboxStorage implements
             $rows = (new Query($this->db))
                 ->from($this->table)
                 ->where(condition: ['claimed_by' => $claimId, 'status' => OutboxStatus::Processing->value])
-                ->orderBy(['created_at' => SORT_ASC])
+                ->orderBy(['priority' => SORT_DESC, 'created_at' => SORT_ASC])
                 ->all();
 
             $messages = [];
@@ -541,7 +541,7 @@ final readonly class DbOutboxStorage implements
             ->from($this->table)
             ->where(condition: ['status' => OutboxStatus::Processing->value])
             ->andWhere($this->staleCondition($claimedBefore))
-            ->orderBy(['created_at' => SORT_ASC]);
+            ->orderBy(['priority' => SORT_DESC, 'created_at' => SORT_ASC]);
     }
 
     /**
@@ -577,6 +577,7 @@ final readonly class DbOutboxStorage implements
             'attempts' => $message->getAttempts(),
             'last_attempt_at' => $lastAttemptAt === null ? null : $this->mapper->formatDateTime($lastAttemptAt),
             'aggregate_id' => $message->getAggregateId(),
+            'priority' => $message->getPriority(),
             'claimed_by' => null,
             'claimed_at' => null,
         ];

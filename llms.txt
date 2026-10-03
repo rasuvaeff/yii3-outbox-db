@@ -128,7 +128,8 @@ $guarded = new DbOutboxStorage(db: $connection, requireTransaction: true); // de
 ## Migration
 
 Classes: `Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable`,
-then `Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt`
+then `Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt`,
+then `Rasuvaeff\Yii3OutboxDb\Migration\M261003000000AddOutboxPriority`
 (namespaced since 2.0). Register BY NAMESPACE:
 
 ```php
@@ -144,9 +145,17 @@ such a definition is inert, not fatal. `setSourceNamespaces()` above is the
 supported DI entry point.
 
 Columns: `id` (PK), `type`, `payload`, `status`, `created_at`, `attempts`,
-`last_attempt_at`, `aggregate_id`, `claimed_by`, `claimed_at`. Index
-`idx_<table>_pending` backs the pending poll; `idx_<table>_processing`
-(`status`, `claimed_at`) backs stale-claim recovery.
+`last_attempt_at`, `aggregate_id`, `priority`, `claimed_by`, `claimed_at`.
+Index `idx_<table>_pending` backs type-filtered listings;
+`idx_<table>_priority` (`status`, `priority DESC`, `created_at`) backs the
+claim order; `idx_<table>_processing` (`status`, `claimed_at`) backs
+stale-claim recovery.
+
+Order of claim / claimReady / findPending / findFailed: `priority DESC,
+created_at ASC` (core 1.8 `record(..., priority:)`, range -32768..32767,
+strict, no aging). A row read without the column maps to priority 0.
+`M261003000000AddOutboxPriority` is mandatory: every insert writes `priority`,
+so run `migrate:up` BEFORE deploying the new code.
 
 `M260820000000AddOutboxClaimedAt` is mandatory: `claim()` writes `claimed_at`,
 so run `migrate:up` BEFORE deploying the new code. `down()` is MySQL/PostgreSQL

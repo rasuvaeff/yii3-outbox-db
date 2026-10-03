@@ -9,6 +9,7 @@ use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260611000000CreateOutboxTable;
 use Rasuvaeff\Yii3OutboxDb\Migration\M260820000000AddOutboxClaimedAt;
+use Rasuvaeff\Yii3OutboxDb\Migration\M261003000000AddOutboxPriority;
 use Testo\Assert;
 use Testo\Codecov\CoversNothing;
 use Testo\Test;
@@ -55,9 +56,11 @@ final class CrossDatabaseMigrationTest
             $builder = new MigrationBuilder(db: $db, informer: new NullMigrationInformer());
             $create = new M260611000000CreateOutboxTable();
             $addClaimedAt = new M260820000000AddOutboxClaimedAt();
+            $addPriority = new M261003000000AddOutboxPriority();
 
             $create->up($builder);
             $addClaimedAt->up($builder);
+            $addPriority->up($builder);
 
             $schema = $db->getTableSchema('outbox', true);
             Assert::notNull($schema);
@@ -101,7 +104,10 @@ final class CrossDatabaseMigrationTest
             Assert::same($storage->deleteByStatus(OutboxStatus::Published, new \DateTimeImmutable('2026-06-11 12:00:30')), 1);
 
             $this->skipLockedClaimsAroundAConcurrentLock($database, $db);
+            $this->priorityOrdersTheClaim($db);
 
+            $addPriority->down($builder);
+            Assert::null($db->getTableSchema('outbox', true)?->getColumn('priority'));
             $addClaimedAt->down($builder);
             Assert::null($db->getTableSchema('outbox', true)?->getColumn('claimed_at'));
 
@@ -154,7 +160,29 @@ final class CrossDatabaseMigrationTest
         Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $afterUnlock), ['locked']);
     }
 
-    private function message(string $id, string $createdAt): OutboxMessage
+    /**
+     * The claim order on a real server: `priority DESC, created_at ASC`, with
+     * the descending index from `M261003000000AddOutboxPriority` in place.
+     */
+    private function priorityOrdersTheClaim(ConnectionInterface $db): void
+    {
+        $db->createCommand()->delete('outbox')->execute();
+        $storage = new DbOutboxStorage(db: $db);
+        $storage->saveBatch([
+            $this->message('p-bulk-old', '2026-10-03 10:00:00'),
+            $this->message('p-urgent-new', '2026-10-03 10:00:02', priority: 10),
+            $this->message('p-urgent-old', '2026-10-03 10:00:01', priority: 10),
+            $this->message('p-bulk-new', '2026-10-03 10:00:03'),
+        ]);
+
+        $claimed = $storage->claim(limit: 3);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['p-urgent-old', 'p-urgent-new', 'p-bulk-old']);
+        Assert::same($storage->getById('p-urgent-old')?->getPriority(), 10);
+        $db->createCommand()->delete('outbox')->execute();
+    }
+
+    private function message(string $id, string $createdAt, int $priority = 0): OutboxMessage
     {
         return new OutboxMessage(
             id: $id,
@@ -162,6 +190,7 @@ final class CrossDatabaseMigrationTest
             payload: '{"experiment":"x"}',
             status: OutboxStatus::Pending,
             createdAt: new \DateTimeImmutable($createdAt),
+            priority: $priority,
         );
     }
 

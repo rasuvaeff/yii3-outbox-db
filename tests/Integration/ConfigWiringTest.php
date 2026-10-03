@@ -191,6 +191,7 @@ final class ConfigWiringTest
                 attempts        INTEGER      NOT NULL DEFAULT 0,
                 last_attempt_at VARCHAR(30),
                 aggregate_id    VARCHAR(255),
+                priority        SMALLINT     NOT NULL DEFAULT 0,
                 claimed_by      VARCHAR(64),
                 claimed_at      VARCHAR(30)
             )

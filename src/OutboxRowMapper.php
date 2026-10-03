@@ -28,6 +28,8 @@ final readonly class OutboxRowMapper
         $attempts = $this->extractInt(row: $row, column: 'attempts');
         $lastAttemptAt = $this->extractNullableDateTime(row: $row, column: 'last_attempt_at');
         $aggregateId = $this->extractNullableString(row: $row, column: 'aggregate_id');
+        // a row read from a table without the column (migration not yet applied) is priority 0
+        $priority = \array_key_exists('priority', $row) ? $this->extractInt(row: $row, column: 'priority') : 0;
 
         try {
             return new OutboxMessage(
@@ -39,6 +41,7 @@ final readonly class OutboxRowMapper
                 attempts: $attempts,
                 lastAttemptAt: $lastAttemptAt,
                 aggregateId: $aggregateId,
+                priority: $priority,
             );
         } catch (\InvalidArgumentException $e) {
             throw new InvalidOutboxRowException(message: sprintf('Invalid outbox row: %s', $e->getMessage()), code: $e->getCode(), previous: $e);
