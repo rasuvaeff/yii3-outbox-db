@@ -235,6 +235,19 @@ MySQL 8+ and PostgreSQL 9.5+ only. SQLite has no `FOR` clause and rejects the
 claim with `NotSupportedException` at query time — keep the flag off in a
 SQLite-backed test environment.
 
+**Isolation on MySQL and MariaDB.** `claim()`, `claimReady()` and
+`releaseStaleClaims()` select ids and then update them under a guard
+(`status = 'pending'`, the staleness predicate) that re-checks every row, so
+they run their transaction as `READ COMMITTED` on the MySQL driver whatever the
+session default is. Under REPEATABLE READ, MariaDB 11.6.2+ with
+`innodb_snapshot_isolation=ON` (its default) fails the `UPDATE` with error 1020
+"Record has changed since last read" whenever another connection changed a
+selected row in between. The level is not set when the call runs inside a
+transaction you already opened — `yiisoft/db` cannot change it there. PostgreSQL
+already defaults to `READ COMMITTED`; SQLite is left alone. Writes under
+`READ COMMITTED` need `binlog_format` `ROW` or `MIXED` (the MySQL and MariaDB
+defaults), not `STATEMENT`.
+
 #### Recovering stale claims
 
 A worker killed between `claim()` and the finalising write — SIGKILL under

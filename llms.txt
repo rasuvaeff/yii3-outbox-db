@@ -29,6 +29,10 @@ composer require rasuvaeff/yii3-outbox-db
   claim's id select `FOR UPDATE SKIP LOCKED`, so concurrent workers take
   disjoint rows without waiting on each other's locks. MySQL 8+/PostgreSQL
   9.5+; SQLite throws `NotSupportedException` at claim time.
+- `claim()`/`claimReady()`/`releaseStaleClaims()` run their transaction as
+  `READ COMMITTED` on the MySQL driver (MariaDB 11.6.2+ `innodb_snapshot_isolation`
+  otherwise fails the guarded `UPDATE` with error 1020); not set inside an
+  already open transaction; PostgreSQL/SQLite unchanged.
 - Constructor flag `requireTransaction: false` (params `require_transaction`):
   `true` makes `save()` of a *new* row and `saveBatch()` throw
   `Exception\OutboxWriteOutsideTransactionException` when

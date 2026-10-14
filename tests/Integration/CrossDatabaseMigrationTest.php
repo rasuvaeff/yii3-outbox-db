@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3OutboxDb\Tests\Integration;
 
+use Psr\Clock\ClockInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
@@ -30,8 +31,8 @@ use Yiisoft\Test\Support\SimpleCache\MemorySimpleCache;
  * migration at all (`dropColumn`). This applies both, up and down, and drives
  * the storage through the writes that differ most between engines — the
  * `upsert()` behind `save()`, the multi-row `insertBatch()`, the token claim,
- * the aggregate `stats()` — on MySQL and PostgreSQL. Runs only when
- * `OUTBOX_TEST_DB` names a live server; CI supplies both.
+ * the aggregate `stats()` — on MySQL, MariaDB and PostgreSQL. Runs only when
+ * `OUTBOX_TEST_DB` names a live server; CI supplies all three.
  */
 #[Test]
 #[CoversNothing]
@@ -41,7 +42,7 @@ final class CrossDatabaseMigrationTest
     {
         $database = getenv('OUTBOX_TEST_DB');
 
-        if ($database !== 'mysql' && $database !== 'pgsql') {
+        if (!\in_array($database, ['mysql', 'mariadb', 'pgsql'], strict: true)) {
             Assert::true($database === false || $database === '');
 
             return;
@@ -104,6 +105,7 @@ final class CrossDatabaseMigrationTest
             Assert::same($storage->deleteByStatus(OutboxStatus::Published, new \DateTimeImmutable('2026-06-11 12:00:30')), 1);
 
             $this->skipLockedClaimsAroundAConcurrentLock($database, $db);
+            $this->claimSurvivesACandidateChangedAfterItsSelect($database, $db);
             $this->priorityOrdersTheClaim($db);
 
             $addPriority->down($builder);
@@ -161,6 +163,61 @@ final class CrossDatabaseMigrationTest
     }
 
     /**
+     * Another connection changes a candidate row between the claim's id
+     * select and its `UPDATE` — here a competing claimer taking it. Under
+     * REPEATABLE READ MariaDB 11.6.2+ (`innodb_snapshot_isolation=ON`, the
+     * default) fails that `UPDATE` with error 1020 "Record has changed since
+     * last read"; the claim runs under READ COMMITTED so the
+     * `status = 'pending'` guard skips the row instead (#40). The clock is the
+     * seam: the claim reads it exactly once, after the select, to stamp
+     * `claimed_at`. MySQL and PostgreSQL pass either way — the regression is
+     * only observable on MariaDB.
+     */
+    private function claimSurvivesACandidateChangedAfterItsSelect(string $database, ConnectionInterface $db): void
+    {
+        $db->createCommand()->delete('outbox')->execute();
+
+        $other = $this->connection($database);
+        $other->open();
+
+        try {
+            $clock = new readonly class ($other) implements ClockInterface {
+                public function __construct(
+                    private ConnectionInterface $other,
+                ) {}
+
+                #[\Override]
+                public function now(): \DateTimeImmutable
+                {
+                    $this->other->createCommand()->update(
+                        table: 'outbox',
+                        columns: ['status' => OutboxStatus::Processing->value, 'claimed_by' => 'competitor'],
+                        condition: ['id' => 'taken'],
+                    )->execute();
+
+                    return new \DateTimeImmutable('2026-10-14 12:00:00');
+                }
+            };
+
+            $storage = new DbOutboxStorage(db: $db, clock: $clock);
+            $storage->saveBatch([
+                $this->message('taken', '2026-10-14 11:00:00'),
+                $this->message('left-1', '2026-10-14 11:00:01'),
+                $this->message('left-2', '2026-10-14 11:00:02'),
+            ]);
+
+            $claimed = $storage->claim(limit: 10);
+
+            Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['left-1', 'left-2']);
+            Assert::same((new Query($db))->select('claimed_by')->from('outbox')->where(['id' => 'taken'])->scalar(), 'competitor');
+        } finally {
+            $other->close();
+        }
+
+        $db->createCommand()->delete('outbox')->execute();
+    }
+
+    /**
      * The claim order on a real server: `priority DESC, created_at ASC`, with
      * the descending index from `M261003000000AddOutboxPriority` in place.
      */
@@ -197,10 +254,12 @@ final class CrossDatabaseMigrationTest
     private function connection(string $database): ConnectionInterface
     {
         $cache = new SchemaCache(psrCache: new MemorySimpleCache());
-        $mysqlPort = getenv('OUTBOX_TEST_MYSQL_PORT') ?: '3306';
+        $mysqlPort = $database === 'mariadb'
+            ? (getenv('OUTBOX_TEST_MARIADB_PORT') ?: '3307')
+            : (getenv('OUTBOX_TEST_MYSQL_PORT') ?: '3306');
         $pgsqlPort = getenv('OUTBOX_TEST_PGSQL_PORT') ?: '5432';
 
-        return $database === 'mysql'
+        return $database !== 'pgsql'
             ? new MysqlConnection(
                 driver: new MysqlDriver(
                     dsn: sprintf('mysql:host=127.0.0.1;port=%s;dbname=outbox;charset=utf8mb4', $mysqlPort),

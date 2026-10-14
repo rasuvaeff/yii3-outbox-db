@@ -238,6 +238,18 @@ new DbOutboxStorage(db: $connection, skipLocked: true);
 `NotSupportedException` в момент запроса — в тестовом окружении на SQLite
 флаг держите выключенным.
 
+**Изоляция на MySQL и MariaDB.** `claim()`, `claimReady()` и
+`releaseStaleClaims()` выбирают id и затем обновляют их под guard'ом
+(`status = 'pending'`, предикат зависания), который перепроверяет каждую
+строку, поэтому на MySQL-драйвере их транзакция идёт в `READ COMMITTED`
+независимо от уровня сессии. Под REPEATABLE READ MariaDB 11.6.2+ с
+`innodb_snapshot_isolation=ON` (по умолчанию) роняет `UPDATE` ошибкой 1020
+"Record has changed since last read", если другое соединение успело изменить
+выбранную строку. Внутри уже открытой вами транзакции уровень не выставляется —
+`yiisoft/db` не может сменить его там. PostgreSQL и так по умолчанию в
+`READ COMMITTED`; SQLite не трогается. Запись в `READ COMMITTED` требует
+`binlog_format` `ROW` или `MIXED` (умолчания MySQL и MariaDB), не `STATEMENT`.
+
 #### Восстановление зависших claim'ов
 
 Воркер, убитый между `claim()` и финализирующей записью — SIGKILL под
