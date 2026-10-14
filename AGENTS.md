@@ -137,11 +137,13 @@ make release-check
   engine-sensitive SQL meet MySQL and PostgreSQL.** SQLite accepts DDL the
   other engines reject, cannot run `down()` of the `claimed_at` migration at
   all (`dropColumn`), and its `upsert`/`insertBatch`/aggregate paths differ.
-  The test runs only with `OUTBOX_TEST_DB=mysql|pgsql`; the ungated
-  `database-integration` matrix job in `build.yml` supplies both. Locally:
+  The test runs only with `OUTBOX_TEST_DB=mysql|mariadb|pgsql`; the ungated
+  `database-integration` matrix job in `build.yml` supplies all three. Locally:
   `docker run -d --name outbox-mysql -p 13306:3306 -e MYSQL_DATABASE=outbox
   -e MYSQL_ROOT_PASSWORD=outbox mysql:8.4`, the same for `postgres:17` with
-  `POSTGRES_DB=outbox POSTGRES_PASSWORD=outbox` on 15432, then
+  `POSTGRES_DB=outbox POSTGRES_PASSWORD=outbox` on 15432 and `mariadb:11.8`
+  with `MARIADB_DATABASE=outbox MARIADB_ROOT_PASSWORD=outbox` on 13307
+  (`OUTBOX_TEST_MARIADB_PORT=13307`), then
   `OUTBOX_TEST_DB=mysql OUTBOX_TEST_MYSQL_PORT=13306 vendor/bin/testo
   --suite=Integration` in a PHP image that has `pdo_mysql`/`pdo_pgsql` — the
   plain `composer:2` image has neither (`config.platform` pins both
@@ -175,6 +177,15 @@ make release-check
   worker mid-delivery. Neither can be reproduced in the SQLite suite — SQLite
   serialises the interleaving away — so the mutants survive honestly rather than
   being killed by a test that proves nothing.
+- **Select-then-update transactions run `READ COMMITTED` on the MySQL driver**
+  (`selectThenUpdateIsolation()`: `claimWhere()`, `releaseStaleClaims()`).
+  Under REPEATABLE READ, MariaDB 11.6.2+ (`innodb_snapshot_isolation=ON` by
+  default) fails the guarded `UPDATE` with error 1020 when a selected row
+  changed after the snapshot (#40). Do not drop the level or pass it to SQLite
+  (throws `NotSupportedException`). Only the `mariadb` leg of
+  `database-integration` can observe the regression — MySQL 8.4 and
+  PostgreSQL pass without the fix. A new select-then-update transaction takes
+  the same level.
 - **`payload` stays `TEXT` on purpose.** Unbounded on PostgreSQL and SQLite,
   65,535 bytes on MySQL. Widening it to `MEDIUMTEXT` in a migration would force
   a table rebuild on every MySQL installation for a ceiling most never reach, so

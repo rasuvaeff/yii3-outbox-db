@@ -17,6 +17,7 @@ use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3OutboxDb\Exception\OutboxWriteOutsideTransactionException;
 use Yiisoft\Db\Connection\ConnectionInterface;
 use Yiisoft\Db\Query\Query;
+use Yiisoft\Db\Transaction\TransactionInterface;
 
 /**
  * SQL-backed {@see StorageInterface}.
@@ -344,7 +345,7 @@ final readonly class DbOutboxStorage implements
             }
 
             return $messages;
-        });
+        }, $this->selectThenUpdateIsolation());
     }
 
     #[\Override]
@@ -500,7 +501,7 @@ final readonly class DbOutboxStorage implements
                     $this->staleCondition($claimedBefore),
                 ],
             )->execute();
-        });
+        }, $this->selectThenUpdateIsolation());
     }
 
     /**
@@ -554,6 +555,29 @@ final readonly class DbOutboxStorage implements
             ['claimed_at' => null],
             ['<', 'claimed_at', $this->mapper->formatDateTime($claimedBefore)],
         ];
+    }
+
+    /**
+     * The isolation level for a transaction that selects ids and then updates
+     * them under a guard in the `WHERE` clause.
+     *
+     * Such a transaction never relies on its snapshot: the guard re-checks
+     * every row at update time, and a row another connection changed in
+     * between is simply not updated. Under InnoDB's default REPEATABLE READ
+     * that is still what MySQL does, but MariaDB 11.6.2+ with
+     * `innodb_snapshot_isolation=ON` (the default) instead fails the `UPDATE`
+     * with error 1020 "Record has changed since last read" as soon as a
+     * selected row was changed after the snapshot. READ COMMITTED gives each
+     * statement a fresh view, so the guard decides as it was meant to (#40).
+     *
+     * MySQL-family only. SQLite supports only READ UNCOMMITTED and
+     * SERIALIZABLE and throws on anything else; PostgreSQL already defaults to
+     * READ COMMITTED, and `yiisoft/db` sets the level before `BEGIN`, where
+     * PostgreSQL ignores it.
+     */
+    private function selectThenUpdateIsolation(): ?string
+    {
+        return $this->db->getDriverName() === 'mysql' ? TransactionInterface::READ_COMMITTED : null;
     }
 
     private function now(): \DateTimeImmutable

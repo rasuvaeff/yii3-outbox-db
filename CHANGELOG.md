@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `claim()`, `claimReady()` and `releaseStaleClaims()` failed with
+  `SQLSTATE[HY000]: 1020 Record has changed since last read` on MariaDB
+  11.6.2+ (`innodb_snapshot_isolation=ON`, the default) when another
+  connection changed a selected row between the id select and the guarded
+  `UPDATE`. On the MySQL driver these transactions now run as
+  `READ COMMITTED`, so the existing `status`/staleness guard skips such a row
+  instead. `CrossDatabaseMigrationTest` reproduces it, and the
+  `database-integration` matrix now includes MariaDB 11.8 (#40).
+
 ## 2.6.0 — 2026-10-03
 
 ### Added
