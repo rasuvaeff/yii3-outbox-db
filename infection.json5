@@ -8,30 +8,42 @@
         "summary": "build/infection-summary.log"
     },
     "testFramework": "testo",
-    // ER-003: Exception\InvalidOutboxRowException (thrown throughout
-    // OutboxRowMapper) is now credited in OutboxRowMapperTest's #[Covers]. It
-    // is a bare marker class (`extends \InvalidArgumentException {}`, no body)
-    // with zero mutable statements — confirmed empirically: Total stayed 91
-    // before/after adding the attribution, no mutant was ever generated for
-    // the exception class itself. Two pre-existing OutboxRowMapper survivors
-    // that verify the exception is thrown correctly were closed alongside it
-    // (throwsOnNonStringColumn, throwsOnAttemptsWithEmbeddedDigits).
-    //
-    // Remaining 7 survivors, none touched by the above:
-    //  - OutboxRowMapper::extractInt Throw_ (:146, the "missing" branch) is
-    //    equivalent: the guarded throw and the unguarded fallback throw at
-    //    :159-161 build the exact same message
-    //    (`Missing or invalid column "%s" in outbox row`), so removing the
-    //    `throw` keyword just makes the code fall through to an
-    //    indistinguishable throw two lines later.
-    //  - DbOutboxStorage::claim (:76, :77, :87, :90 x2, :100) are pre-existing,
-    //    unrelated to this exception's attribution gap — untouched by this
-    //    change (identical before/after), out of scope here.
-    //  - Console\Age::parse CastInt (`(int) $matches['count']` → the string):
-    //    equivalent — the regex admits digits only, and `'15' * 60` is the
-    //    same int under strict_types, so no input can tell the two apart.
+    // Overall MSI (--with-uncovered) is about 99% (Not Covered: 0). Two survivors
+    // remain, both genuine equivalents, so minMsi is not lowered for them:
+    //  - OutboxRowMapper::extractInt Throw_ (the "missing" branch): the guarded
+    //    throw and the unguarded fallback throw at the end of the method build the
+    //    exact same message (`Missing or invalid column "%s" in outbox row`), so
+    //    removing the `throw` keyword just makes the code fall through to an
+    //    indistinguishable throw a few lines later.
+    //  - Console\Age::parse CastInt (`(int) $matches['count']` -> the string):
+    //    the regex admits digits only, and `'15' * 60` is the same int under
+    //    strict_types, so no input can tell the two apart.
+    // The three DbOutboxStorage::save() mutants (LogicalNot x2, LogicalAndAllSubExprNegation)
+    // are reported Timed Out, which Infection counts as killed.
     "minMsi": 93,
     "mutators": {
-        "@default": true
+        "@default": true,
+        // Constructor/method parameter declarations with a default value
+        // (`private int $x = 100,`, `bool $strict = false,`): the mutant sits on a
+        // signature line with no executable opcode under pcov, so it is reported Not
+        // Covered whatever the tests do. Only a type-prefixed `$name = default,` line
+        // matches; a body line cannot (no type before the variable). Do NOT add ^ or $:
+        // Infection wraps the pattern as ^-\s*REGEX$ over the removed diff line.
+        // Verified 2026-11-01 by diffing the survivor lists with and without it:
+        // bulkhead 6, circuit-breaker 13, json-ld 19 mutants removed, all of them
+        // such signature lines; Escaped and Timed Out unchanged.
+        "global-ignoreSourceCodeByRegex": [
+            "(?:(?:private|protected|public|readonly)\\s+)*\\??[A-Za-z_\\\\][\\w\\\\|]*\\s+\\$\\w+\\s*=\\s*[^,;]+,"
+        ],
+        // Off: with --with-uncovered a PublicVisibility mutant sits on a parameterless
+        // method's signature line, which has no executable opcode under pcov/xdebug,
+        // so it is reported Not Covered and can never be killed, whatever #[Covers]
+        // says. Measured on pinned-http-client 2026-11-01: 4 of 4 such mutants were
+        // Not Covered, none killed.
+        "PublicVisibility": false,
+        // Off for the same reason: a ProtectedVisibility mutant on a protected method's
+        // signature line is Not Covered and cannot be killed. Measured on
+        // understudy-phpunit 2026-11-01: 4 of 4 such mutants were Not Covered.
+        "ProtectedVisibility": false
     }
 }

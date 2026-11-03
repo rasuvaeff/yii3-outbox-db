@@ -138,6 +138,19 @@ final class OutboxCommandsTest
         Assert::notNull($this->storage->getById('pending'));
     }
 
+    public function purgeRejectsOptionValuesThatAreNotStrings(): void
+    {
+        $this->save('pub', OutboxStatus::Published, '2026-06-01 12:00:00');
+        $tester = $this->purge();
+
+        Assert::same($tester->execute(['--status' => ['published']]), Command::INVALID);
+        Assert::true(str_contains($tester->getDisplay(), '--status must be "published" or "failed"'));
+
+        Assert::same($tester->execute(['--older-than' => ['7d']]), Command::INVALID);
+        Assert::true(str_contains($tester->getDisplay(), '--older-than: expected a value such as 7d'));
+        Assert::notNull($this->storage->getById('pub'));
+    }
+
     public function purgeRejectsAMalformedAge(): void
     {
         $this->save('pub', OutboxStatus::Published, '2026-06-01 12:00:00');
@@ -202,6 +215,14 @@ final class OutboxCommandsTest
         Assert::true(str_contains($tester->getDisplay(), 'Released 1 stale outbox claim(s)'));
         Assert::same($this->storage->getById('a')?->getStatus(), OutboxStatus::Pending);
         Assert::same($this->storage->getById('b')?->getStatus(), OutboxStatus::Processing);
+    }
+
+    public function releaseStaleRejectsAnAgeThatIsNotAString(): void
+    {
+        $tester = $this->releaseStale();
+
+        Assert::same($tester->execute(['--claimed-before' => ['15m']]), Command::INVALID);
+        Assert::true(str_contains($tester->getDisplay(), '--claimed-before: expected a value such as 15m'));
     }
 
     public function releaseStaleRejectsAMalformedAgeOrLimit(): void

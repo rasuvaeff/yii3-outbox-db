@@ -157,14 +157,18 @@ final readonly class DbOutboxStorage implements
     }
 
     #[\Override]
-    public function findPending(array $types = [], int $limit = 1000): array
-    {
+    public function findPending(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->findByStatus(OutboxStatus::Pending, $types, $limit);
     }
 
     #[\Override]
-    public function findFailed(array $types = [], int $limit = 1000): array
-    {
+    public function findFailed(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->findByStatus(OutboxStatus::Failed, $types, $limit);
     }
 
@@ -255,8 +259,10 @@ final readonly class DbOutboxStorage implements
     }
 
     #[\Override]
-    public function claim(array $types = [], int $limit = 1000): array
-    {
+    public function claim(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->claimWhere($types, $limit, null);
     }
 
@@ -448,8 +454,10 @@ final readonly class DbOutboxStorage implements
      *
      * @return list<OutboxMessage>
      */
-    public function findStaleClaims(\DateTimeImmutable $claimedBefore, int $limit = 1000): array
-    {
+    public function findStaleClaims(
+        \DateTimeImmutable $claimedBefore,
+        int $limit = 1000,
+    ): array {
         $messages = [];
 
         foreach ($this->staleQuery($claimedBefore)->limit($limit)->all() as $row) {
@@ -475,8 +483,10 @@ final readonly class DbOutboxStorage implements
      *
      * @param positive-int $limit
      */
-    public function releaseStaleClaims(\DateTimeImmutable $claimedBefore, int $limit = 1000): int
-    {
+    public function releaseStaleClaims(
+        \DateTimeImmutable $claimedBefore,
+        int $limit = 1000,
+    ): int {
         return $this->db->transaction(function () use ($claimedBefore, $limit): int {
             /** @var list<string> $ids */
             $ids = $this->staleQuery($claimedBefore)->select('id')->limit($limit)->column();

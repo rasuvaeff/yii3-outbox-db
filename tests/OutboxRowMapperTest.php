@@ -261,6 +261,23 @@ final class OutboxRowMapperTest
         yield 'created_at' => ['created_at'];
     }
 
+    #[DataProvider('nonStringNullableColumnProvider')]
+    public function throwsOnNonStringNullableColumn(string $column): void
+    {
+        try {
+            $this->mapper->map($this->validRow([$column => 123]));
+            Assert::fail('Expected InvalidOutboxRowException');
+        } catch (InvalidOutboxRowException $e) {
+            Assert::same($e->getMessage(), sprintf('Invalid column "%s": expected string or null, got int', $column));
+        }
+    }
+
+    public static function nonStringNullableColumnProvider(): iterable
+    {
+        yield 'last_attempt_at' => ['last_attempt_at'];
+        yield 'aggregate_id' => ['aggregate_id'];
+    }
+
     #[DataProvider('missingColumnProvider')]
     public function throwsOnMissingRequiredColumn(string $column): void
     {
