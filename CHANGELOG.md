@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Mutation testing now counts code that tests execute but do not name in `#[Covers]` (`infection --with-uncovered`); overall MSI 88% to about 99% against minMsi 93. Added tests: `MigrationStepsTest` (claimed_at and priority migrations), claim batch filling by status, claim token format, single-statement empty `claim()`/`releaseStaleClaims()`, the release status guard under a concurrent change, non-string nullable row columns and non-string console options. The signatures of `findPending()`, `findFailed()`, `claim()`, `findStaleClaims()` and `releaseStaleClaims()` now list one parameter per line (no behaviour change).
+
 ## 2.6.1 — 2026-10-14
 
 ### Fixed

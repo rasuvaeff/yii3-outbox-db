@@ -10,6 +10,7 @@ use Rasuvaeff\Yii3OutboxDb\DbOutboxStorage;
 use Rasuvaeff\Yii3OutboxDb\Exception\InvalidOutboxRowException;
 use Rasuvaeff\Yii3OutboxDb\Exception\OutboxWriteOutsideTransactionException;
 use Rasuvaeff\Yii3OutboxDb\Tests\Support\CountingProfiler;
+use Rasuvaeff\Yii3OutboxDb\Tests\Support\RowChangingProfiler;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Data\DataProvider;
@@ -888,6 +889,70 @@ final class SqliteIntegrationTest
 
         Assert::same($storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'), limit: 2), 2);
         Assert::count($storage->findStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00')), 1);
+    }
+
+    public function claimSelectsOnlyPendingRowsWhenFillingTheBatch(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'failed-first', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00', priority: 5)->withStatus(OutboxStatus::Failed));
+        $storage->save($this->pending(id: 'published-first', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00', priority: 5)->withStatus(OutboxStatus::Published));
+        $storage->save($this->pending(id: 'pending', type: 'ab.exposure', createdAt: '2026-06-11 12:05:00'));
+
+        $claimed = $storage->claim(limit: 1);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): string => $m->getId(), $claimed), ['pending']);
+    }
+
+    public function claimTokenIsSixteenHexCharacters(): void
+    {
+        $storage = $this->createStorage();
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-06-11 12:00:00'));
+
+        $storage->claim();
+
+        $rows = iterator_to_array($this->allRows());
+        Assert::same(preg_match('/^[0-9a-f]{16}\z/', (string) $rows[0]['claimed_by']), 1);
+    }
+
+    public function claimWithNothingPendingRunsASingleStatement(): void
+    {
+        $storage = $this->createStorage();
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        Assert::same($storage->claim(), []);
+        $this->db->setProfiler(null);
+
+        Assert::same($profiler->statements, 1);
+    }
+
+    public function releaseStaleClaimsWithNothingStaleRunsASingleStatement(): void
+    {
+        $storage = $this->createStorage();
+        $profiler = new CountingProfiler();
+        $this->db->setProfiler($profiler);
+
+        Assert::same($storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00')), 0);
+        $this->db->setProfiler(null);
+
+        Assert::same($profiler->statements, 1);
+    }
+
+    public function releaseStaleClaimsLeavesARowThatLeftProcessingBetweenSelectAndUpdate(): void
+    {
+        $storage = $this->createStorage(now: '2026-08-20 10:00:00');
+        $storage->save($this->pending(id: 'a', type: 'ab.exposure', createdAt: '2026-08-20 09:00:00'));
+        $storage->claim();
+
+        $profiler = new RowChangingProfiler($this->db, afterStatements: 1, sql: "UPDATE outbox SET status = 'published' WHERE id = 'a'");
+        $this->db->setProfiler($profiler);
+
+        $released = $storage->releaseStaleClaims(new \DateTimeImmutable('2026-08-20 10:15:00'));
+        $this->db->setProfiler(null);
+
+        Assert::true($profiler->fired);
+        Assert::same($released, 0);
+        Assert::same($storage->getById('a')?->getStatus(), OutboxStatus::Published);
     }
 
     public function twoConnectionsNeverClaimTheSameMessage(): void
