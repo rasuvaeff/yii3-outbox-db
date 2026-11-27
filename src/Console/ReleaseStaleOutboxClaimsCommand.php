@@ -48,7 +48,7 @@ final class ReleaseStaleOutboxClaimsCommand extends Command
             return Command::INVALID;
         }
 
-        $claimedBeforeOption = $input->getOption('claimed-before');
+        $claimedBeforeOption = $input->getOptions()['claimed-before'] ?? null;
 
         if (!is_string($claimedBeforeOption)) {
             return $this->rejectAge($output, 'expected a value such as 15m');

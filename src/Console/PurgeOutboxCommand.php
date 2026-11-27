@@ -52,7 +52,7 @@ final class PurgeOutboxCommand extends Command
             return Command::INVALID;
         }
 
-        $statusOption = $input->getOption('status');
+        $statusOption = $input->getOptions()['status'] ?? null;
 
         if (!is_string($statusOption)) {
             return $this->rejectStatus($output);
@@ -64,7 +64,7 @@ final class PurgeOutboxCommand extends Command
             return $this->rejectStatus($output);
         }
 
-        $olderThanOption = $input->getOption('older-than');
+        $olderThanOption = $input->getOptions()['older-than'] ?? null;
         $olderThan = null;
 
         if ($olderThanOption !== null) {
