@@ -55,7 +55,7 @@ final class RequeueFailedOutboxCommand extends Command
 
         /** @var list<string> $types */
         $types = array_values(array_filter(
-            (array) $input->getOption('type'),
+            (array) ($input->getOptions()['type'] ?? []),
             static fn(mixed $type): bool => \is_string($type) && $type !== '',
         ));
 
